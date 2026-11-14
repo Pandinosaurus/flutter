@@ -10,24 +10,14 @@ const String alternativeText = 'Everything is awesome!!';
 
 void main() {
   testWidgets('TextField restoration', (WidgetTester tester) async {
-    await tester.pumpWidget(
-      const MaterialApp(
-        restorationScopeId: 'app',
-        home: TestWidget(),
-      ),
-    );
+    await tester.pumpWidget(const MaterialApp(restorationScopeId: 'app', home: TestWidget()));
 
     await restoreAndVerify(tester);
   });
 
   testWidgets('TextField restoration with external controller', (WidgetTester tester) async {
     await tester.pumpWidget(
-      const MaterialApp(
-        restorationScopeId: 'root',
-        home: TestWidget(
-          useExternal: true,
-        ),
-      ),
+      const MaterialApp(restorationScopeId: 'root', home: TestWidget(useExternal: true)),
     );
 
     await restoreAndVerify(tester);
@@ -70,7 +60,7 @@ Future<void> restoreAndVerify(WidgetTester tester) async {
 }
 
 class TestWidget extends StatefulWidget {
-  const TestWidget({Key? key, this.useExternal = false}) : super(key: key);
+  const TestWidget({super.key, this.useExternal = false});
 
   final bool useExternal;
 

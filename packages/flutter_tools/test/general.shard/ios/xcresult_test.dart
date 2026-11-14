@@ -4,124 +4,325 @@
 
 import 'package:flutter_tools/src/base/logger.dart';
 import 'package:flutter_tools/src/base/process.dart';
+import 'package:flutter_tools/src/base/version.dart';
 import 'package:flutter_tools/src/ios/xcodeproj.dart';
 import 'package:flutter_tools/src/ios/xcresult.dart';
 import 'package:flutter_tools/src/macos/xcode.dart';
 
 import '../../src/common.dart';
 import '../../src/fake_process_manager.dart';
+import '../../src/fakes.dart';
+import 'xcresult_test_data.dart';
 
 void main() {
+  const kWhichSysctlCommand = FakeCommand(command: <String>['which', 'sysctl']);
+
+  // x64 host.
+  const kx64CheckCommand = FakeCommand(
+    command: <String>['sysctl', 'hw.optional.arm64'],
+    exitCode: 1,
+  );
+
   // Creates a FakeCommand for the xcresult get call to build the app
   // in the given configuration.
-  FakeCommand _setUpFakeXCResultGetCommand({
+  FakeCommand setUpFakeXCResultCommand({
     required String stdout,
     required String tempResultPath,
     required Xcode xcode,
+    required Version? xcodeVersion,
     int exitCode = 0,
     String stderr = '',
   }) {
-    return FakeCommand(
-      command: <String>[
-        ...xcode.xcrunCommand(),
+    final bool useNewCommand = xcodeVersion != null && xcodeVersion >= Version(16, 0, 0);
+
+    final List<String> command;
+    if (useNewCommand) {
+      command = <String>[
+        'xcrun',
+        'xcresulttool',
+        'get',
+        'build-results',
+        '--path',
+        tempResultPath,
+        '--format',
+        'json',
+      ];
+    } else {
+      command = <String>[
+        'xcrun',
         'xcresulttool',
         'get',
         '--path',
         tempResultPath,
         '--format',
         'json',
-      ],
+      ];
+    }
+
+    return FakeCommand(
+      command: command,
       stdout: stdout,
       stderr: stderr,
       exitCode: exitCode,
-      onRun: () {},
+      onRun: (_) {},
     );
   }
 
-  const FakeCommand _kWhichSysctlCommand = FakeCommand(
-    command: <String>[
-      'which',
-      'sysctl',
-    ],
-  );
-
-  const FakeCommand _kx64CheckCommand = FakeCommand(
-    command: <String>[
-      'sysctl',
-      'hw.optional.arm64',
-    ],
-    exitCode: 1,
-  );
-
-  XCResultGenerator _setupGenerator({
+  XCResultGenerator setupGenerator({
     required String resultJson,
     int exitCode = 0,
     String stderr = '',
+    // Default to an pre-Xcode 16 version of Xcode.
+    // This ensures that tests which don't explicitly set an Xcode version still cover
+    // the logic for pre-Xcode 16 platforms.
+    Version? xcodeVersion = const Version.withText(15, 0, 0, '15.0'),
   }) {
-    final FakeProcessManager fakeProcessManager =
-        FakeProcessManager.list(<FakeCommand>[
-      _kWhichSysctlCommand,
-      _kx64CheckCommand,
-    ]);
-    final Xcode xcode = Xcode.test(
-      processManager: fakeProcessManager,
+    final fakeProcessManager = FakeProcessManager.list(<FakeCommand>[]);
+    final xcode = Xcode.test(
+      toolContext: FakeToolContext.macosHost(processManager: fakeProcessManager),
       xcodeProjectInterpreter: XcodeProjectInterpreter.test(
-        processManager: fakeProcessManager,
-        version: null,
+        toolContext: FakeToolContext.macosHost(processManager: fakeProcessManager),
+        version: xcodeVersion,
       ),
     );
-    fakeProcessManager.addCommands(
-      <FakeCommand>[
-        _setUpFakeXCResultGetCommand(
-          stdout: resultJson,
-          tempResultPath: _tempResultPath,
-          xcode: xcode,
-          exitCode: exitCode,
-          stderr: stderr,
-        ),
-      ],
-    );
-    final ProcessUtils processUtils = ProcessUtils(
+    fakeProcessManager.addCommands(<FakeCommand>[
+      kWhichSysctlCommand,
+      kx64CheckCommand,
+      setUpFakeXCResultCommand(
+        stdout: resultJson,
+        tempResultPath: _tempResultPath,
+        xcode: xcode,
+        exitCode: exitCode,
+        stderr: stderr,
+        xcodeVersion: xcodeVersion,
+      ),
+    ]);
+    final processUtils = ProcessUtils(
       processManager: fakeProcessManager,
       logger: BufferLogger.test(),
     );
-    return XCResultGenerator(
-      resultPath: _tempResultPath,
-      xcode: xcode,
-      processUtils: processUtils,
-    );
+    return XCResultGenerator(resultPath: _tempResultPath, xcode: xcode, processUtils: processUtils);
   }
 
-  testWithoutContext(
-      'correctly parse sample result json when there are issues.', () async {
-    final XCResultGenerator generator = _setupGenerator(resultJson: _sampleResultJsonWithIssues);
+  testWithoutContext('correctly parses new format (Xcode 16+) JSON with issues', () async {
+    final XCResultGenerator generator = setupGenerator(
+      resultJson: kNewFormatResultJsonWithIssues,
+      xcodeVersion: Version(16, 0, 0),
+    );
+    final XCResult result = await generator.generate();
+
+    expect(result.issues.length, 2);
+    expect(result.parseSuccess, isTrue);
+    expect(result.parsingErrorMessage, isNull);
+
+    final XCResultIssue error = result.issues.firstWhere(
+      (issue) => issue.type == XCResultIssueType.error,
+    );
+    expect(error.subType, 'Swift Compiler Error');
+    expect(error.message, "consecutive statements on a line must be separated by ';'");
+    expect(error.location, '/Users/m/Projects/test_create/ios/Runner/AppDelegate.swift:11:82');
+
+    final XCResultIssue warning = result.issues.firstWhere(
+      (issue) => issue.type == XCResultIssueType.warning,
+    );
+    expect(warning.subType, 'Deprecation');
+    expect(warning.message, "'openURL' was deprecated in iOS 10.0");
+    expect(warning.location, '/Users/m/Projects/test_create/ios/Runner/AppDelegate.swift:15:20');
+  });
+
+  testWithoutContext('correctly handles new format (Xcode 16+) with invalid sourceURL', () async {
+    final XCResultGenerator generator = setupGenerator(
+      resultJson: kNewFormatResultJsonWithInvalidUrl,
+      xcodeVersion: Version(16, 0, 0),
+    );
+    final XCResult result = await generator.generate();
+
+    expect(result.issues.length, 1);
+    final XCResultIssue error = result.issues.first;
+    expect(error.location, isNull);
+    expect(error.warnings.first, contains('failed to be parsed'));
+  });
+
+  testWithoutContext('correctly parse sample result json when there are issues.', () async {
+    final XCResultGenerator generator = setupGenerator(resultJson: kSampleResultJsonWithIssues);
     final XCResult result = await generator.generate();
     expect(result.issues.length, 2);
     expect(result.issues.first.type, XCResultIssueType.error);
     expect(result.issues.first.subType, 'Semantic Issue');
     expect(result.issues.first.message, "Use of undeclared identifier 'asdas'");
+    expect(
+      result.issues.first.location,
+      '/Users/m/Projects/test_create/ios/Runner/AppDelegate.m:7:56',
+    );
     expect(result.issues.last.type, XCResultIssueType.warning);
     expect(result.issues.last.subType, 'Warning');
-    expect(result.issues.last.message,
-        "The iOS deployment target 'IPHONEOS_DEPLOYMENT_TARGET' is set to 8.0, but the range of supported deployment target versions is 9.0 to 14.0.99.");
+    expect(
+      result.issues.last.message,
+      "The iOS deployment target 'IPHONEOS_DEPLOYMENT_TARGET' is set to 8.0, but the range of supported deployment target versions is 9.0 to 14.0.99.",
+    );
     expect(result.parseSuccess, isTrue);
     expect(result.parsingErrorMessage, isNull);
   });
 
-  testWithoutContext('correctly parse sample result json when no issues.',
-      () async {
-    final XCResultGenerator generator = _setupGenerator(resultJson: _sampleResultJsonNoIssues);
+  testWithoutContext(
+    'correctly parse sample result json when there are issues but invalid url.',
+    () async {
+      final XCResultGenerator generator = setupGenerator(
+        resultJson: kSampleResultJsonWithIssuesAndInvalidUrl,
+      );
+      final XCResult result = await generator.generate();
+      expect(result.issues.length, 2);
+      expect(result.issues.first.type, XCResultIssueType.error);
+      expect(result.issues.first.subType, 'Semantic Issue');
+      expect(result.issues.first.message, "Use of undeclared identifier 'asdas'");
+      expect(result.issues.first.location, isNull);
+      expect(
+        result.issues.first.warnings.first,
+        '(XCResult) The `url` exists but it was failed to be parsed. url: 3:00',
+      );
+      expect(result.issues.last.type, XCResultIssueType.warning);
+      expect(result.issues.last.subType, 'Warning');
+      expect(
+        result.issues.last.message,
+        "The iOS deployment target 'IPHONEOS_DEPLOYMENT_TARGET' is set to 8.0, but the range of supported deployment target versions is 9.0 to 14.0.99.",
+      );
+      expect(result.parseSuccess, isTrue);
+      expect(result.parsingErrorMessage, isNull);
+    },
+  );
+
+  testWithoutContext('correctly parse sample result json and discard all warnings', () async {
+    final XCResultGenerator generator = setupGenerator(resultJson: kSampleResultJsonWithIssues);
+    final discarder = XCResultIssueDiscarder(typeMatcher: XCResultIssueType.warning);
+    final XCResult result = await generator.generate(
+      issueDiscarders: <XCResultIssueDiscarder>[discarder],
+    );
+    expect(result.issues.length, 1);
+    expect(result.issues.first.type, XCResultIssueType.error);
+    expect(result.issues.first.subType, 'Semantic Issue');
+    expect(result.issues.first.message, "Use of undeclared identifier 'asdas'");
+    expect(
+      result.issues.first.location,
+      '/Users/m/Projects/test_create/ios/Runner/AppDelegate.m:7:56',
+    );
+    expect(result.parseSuccess, isTrue);
+    expect(result.parsingErrorMessage, isNull);
+  });
+
+  testWithoutContext('correctly parse sample result json and discard base on subType', () async {
+    final XCResultGenerator generator = setupGenerator(resultJson: kSampleResultJsonWithIssues);
+    final discarder = XCResultIssueDiscarder(subTypeMatcher: RegExp(r'^Warning$'));
+    final XCResult result = await generator.generate(
+      issueDiscarders: <XCResultIssueDiscarder>[discarder],
+    );
+    expect(result.issues.length, 1);
+    expect(result.issues.first.type, XCResultIssueType.error);
+    expect(result.issues.first.subType, 'Semantic Issue');
+    expect(result.issues.first.message, "Use of undeclared identifier 'asdas'");
+    expect(
+      result.issues.first.location,
+      '/Users/m/Projects/test_create/ios/Runner/AppDelegate.m:7:56',
+    );
+    expect(result.parseSuccess, isTrue);
+    expect(result.parsingErrorMessage, isNull);
+  });
+
+  testWithoutContext('correctly parse sample result json and discard base on message', () async {
+    final XCResultGenerator generator = setupGenerator(resultJson: kSampleResultJsonWithIssues);
+    final discarder = XCResultIssueDiscarder(
+      messageMatcher: RegExp(
+        r"^The iOS deployment target 'IPHONEOS_DEPLOYMENT_TARGET' is set to 8.0, but the range of supported deployment target versions is 9.0 to 14.0.99.$",
+      ),
+    );
+    final XCResult result = await generator.generate(
+      issueDiscarders: <XCResultIssueDiscarder>[discarder],
+    );
+    expect(result.issues.length, 1);
+    expect(result.issues.first.type, XCResultIssueType.error);
+    expect(result.issues.first.subType, 'Semantic Issue');
+    expect(result.issues.first.message, "Use of undeclared identifier 'asdas'");
+    expect(
+      result.issues.first.location,
+      '/Users/m/Projects/test_create/ios/Runner/AppDelegate.m:7:56',
+    );
+    expect(result.parseSuccess, isTrue);
+    expect(result.parsingErrorMessage, isNull);
+  });
+
+  testWithoutContext('correctly parse sample result json and discard base on location', () async {
+    final XCResultGenerator generator = setupGenerator(resultJson: kSampleResultJsonWithIssues);
+    final discarder = XCResultIssueDiscarder(
+      locationMatcher: RegExp(r'/Users/m/Projects/test_create/ios/Runner/AppDelegate.m'),
+    );
+    final XCResult result = await generator.generate(
+      issueDiscarders: <XCResultIssueDiscarder>[discarder],
+    );
+    expect(result.issues.length, 1);
+    expect(result.issues.first.type, XCResultIssueType.warning);
+    expect(result.issues.first.subType, 'Warning');
+    expect(
+      result.issues.first.message,
+      "The iOS deployment target 'IPHONEOS_DEPLOYMENT_TARGET' is set to 8.0, but the range of supported deployment target versions is 9.0 to 14.0.99.",
+    );
+    expect(result.parseSuccess, isTrue);
+    expect(result.parsingErrorMessage, isNull);
+  });
+
+  testWithoutContext('correctly parse sample result json with multiple discarders.', () async {
+    final XCResultGenerator generator = setupGenerator(resultJson: kSampleResultJsonWithIssues);
+    final discardWarnings = XCResultIssueDiscarder(typeMatcher: XCResultIssueType.warning);
+    final discardSemanticIssues = XCResultIssueDiscarder(
+      subTypeMatcher: RegExp(r'^Semantic Issue$'),
+    );
+    final XCResult result = await generator.generate(
+      issueDiscarders: <XCResultIssueDiscarder>[discardWarnings, discardSemanticIssues],
+    );
+    expect(result.issues, isEmpty);
+    expect(result.parseSuccess, isTrue);
+    expect(result.parsingErrorMessage, isNull);
+  });
+
+  testWithoutContext('correctly parse sample result json when no issues.', () async {
+    final XCResultGenerator generator = setupGenerator(resultJson: kSampleResultJsonNoIssues);
     final XCResult result = await generator.generate();
     expect(result.issues.length, 0);
     expect(result.parseSuccess, isTrue);
     expect(result.parsingErrorMessage, isNull);
   });
 
-  testWithoutContext(
-      'error: `xcresulttool get` process fail should return an `XCResult` with stderr as `parsingErrorMessage`.',
-      () async {
-    const String fakeStderr = 'Fake: fail to parse result json.';
-    final XCResultGenerator generator = _setupGenerator(
+  testWithoutContext('correctly parse sample result json with action issues.', () async {
+    final XCResultGenerator generator = setupGenerator(
+      resultJson: kSampleResultJsonWithActionIssues,
+    );
+    final discarder = XCResultIssueDiscarder(typeMatcher: XCResultIssueType.warning);
+    final XCResult result = await generator.generate(
+      issueDiscarders: <XCResultIssueDiscarder>[discarder],
+    );
+    expect(result.issues.length, 1);
+    expect(result.issues.first.type, XCResultIssueType.error);
+    expect(result.issues.first.subType, 'Uncategorized');
+    expect(
+      result.issues.first.message,
+      contains('Unable to find a destination matching the provided destination specifier'),
+    );
+    expect(result.parseSuccess, isTrue);
+    expect(result.parsingErrorMessage, isNull);
+  });
+
+  testWithoutContext('correctly parse sample result on < Xcode 16.', () async {
+    final XCResultGenerator generator = setupGenerator(
+      resultJson: kSampleResultJsonNoIssues,
+      xcodeVersion: Version(15, 0, 0),
+    );
+    final XCResult result = await generator.generate();
+    expect(result.issues.length, 0);
+    expect(result.parseSuccess, isTrue);
+    expect(result.parsingErrorMessage, isNull);
+  });
+
+  testWithoutContext('error: `xcresulttool get` process fail should return an `XCResult` with stderr as `parsingErrorMessage`.', () async {
+    const fakeStderr = 'Fake: fail to parse result json.';
+    final XCResultGenerator generator = setupGenerator(
       resultJson: '',
       exitCode: 1,
       stderr: fakeStderr,
@@ -134,1110 +335,42 @@ void main() {
   });
 
   testWithoutContext('error: `xcresulttool get` no stdout', () async {
-    final XCResultGenerator generator = _setupGenerator(resultJson: '');
+    final XCResultGenerator generator = setupGenerator(resultJson: '');
 
     final XCResult result = await generator.generate();
     expect(result.issues.length, 0);
     expect(result.parseSuccess, false);
-    expect(result.parsingErrorMessage,
-        'xcresult parser: Unrecognized top level json format.');
+    expect(result.parsingErrorMessage, 'xcresult parser: Unrecognized top level json format.');
   });
 
   testWithoutContext('error: wrong top level json format.', () async {
-    final XCResultGenerator generator = _setupGenerator(resultJson: '[]');
+    final XCResultGenerator generator = setupGenerator(resultJson: '[]');
 
     final XCResult result = await generator.generate();
     expect(result.issues.length, 0);
     expect(result.parseSuccess, false);
-    expect(result.parsingErrorMessage,
-        'xcresult parser: Unrecognized top level json format.');
+    expect(result.parsingErrorMessage, 'xcresult parser: Unrecognized top level json format.');
   });
 
-  testWithoutContext('error: fail to parse actions map', () async {
-    final XCResultGenerator generator = _setupGenerator(resultJson: '{}');
+  testWithoutContext('error: fail to parse issue map', () async {
+    final XCResultGenerator generator = setupGenerator(resultJson: '{}');
 
     final XCResult result = await generator.generate();
     expect(result.issues.length, 0);
     expect(result.parseSuccess, false);
-    expect(result.parsingErrorMessage,
-        'xcresult parser: Failed to parse the actions map.');
+    expect(result.parsingErrorMessage, 'xcresult parser: Failed to parse the issues map.');
   });
 
-  testWithoutContext('error: empty actions map', () async {
-    final XCResultGenerator generator =
-        _setupGenerator(resultJson: _sampleResultJsonEmptyActionsMap);
+  testWithoutContext('error: invalid issue map', () async {
+    final XCResultGenerator generator = setupGenerator(
+      resultJson: kSampleResultJsonInvalidIssuesMap,
+    );
 
     final XCResult result = await generator.generate();
     expect(result.issues.length, 0);
     expect(result.parseSuccess, false);
-    expect(result.parsingErrorMessage,
-        'xcresult parser: Failed to parse the actions map.');
-  });
-
-  testWithoutContext('error: empty actions map', () async {
-    final XCResultGenerator generator = _setupGenerator(resultJson: _sampleResultJsonEmptyActionsMap);
-
-    final XCResult result = await generator.generate();
-    expect(result.issues.length, 0);
-    expect(result.parseSuccess, false);
-    expect(result.parsingErrorMessage,
-        'xcresult parser: Failed to parse the actions map.');
-  });
-
-  testWithoutContext('error: empty actions map', () async {
-    final XCResultGenerator generator = _setupGenerator(resultJson: _sampleResultJsonInvalidActionMap);
-
-    final XCResult result = await generator.generate();
-    expect(result.issues.length, 0);
-    expect(result.parseSuccess, false);
-    expect(result.parsingErrorMessage,
-        'xcresult parser: Failed to parse the first action map.');
-  });
-
-  testWithoutContext('error: empty actions map', () async {
-    final XCResultGenerator generator = _setupGenerator(resultJson: _sampleResultJsonInvalidBuildResultMap);
-
-    final XCResult result = await generator.generate();
-    expect(result.issues.length, 0);
-    expect(result.parseSuccess, false);
-    expect(result.parsingErrorMessage,
-        'xcresult parser: Failed to parse the buildResult map.');
-  });
-
-  testWithoutContext('error: empty actions map', () async {
-    final XCResultGenerator generator = _setupGenerator(resultJson: _sampleResultJsonInvalidIssuesMap);
-
-    final XCResult result = await generator.generate();
-    expect(result.issues.length, 0);
-    expect(result.parseSuccess, false);
-    expect(result.parsingErrorMessage,
-        'xcresult parser: Failed to parse the issues map.');
+    expect(result.parsingErrorMessage, 'xcresult parser: Failed to parse the issues map.');
   });
 }
 
-const String _sampleResultJsonInvalidIssuesMap = r'''
-{
-  "_type" : {
-    "_name" : "ActionsInvocationRecord"
-  },
-  "actions" : {
-    "_type" : {
-      "_name" : "Array"
-    },
-    "_values" : [
-      {
-        "buildResult": {
-        }
-      }
-    ]
-  }
-}
-''';
-
-const String _sampleResultJsonInvalidBuildResultMap = r'''
-{
-  "_type" : {
-    "_name" : "ActionsInvocationRecord"
-  },
-  "actions" : {
-    "_type" : {
-      "_name" : "Array"
-    },
-    "_values" : [
-      {}
-    ]
-  }
-}
-''';
-
-const String _sampleResultJsonInvalidActionMap = r'''
-{
-  "_type" : {
-    "_name" : "ActionsInvocationRecord"
-  },
-  "actions" : {
-    "_type" : {
-      "_name" : "Array"
-    },
-    "_values" : [
-      []
-    ]
-  }
-}
-''';
-
-const String _sampleResultJsonEmptyActionsMap = r'''
-{
-  "_type" : {
-    "_name" : "ActionsInvocationRecord"
-  },
-  "actions" : {
-    "_type" : {
-      "_name" : "Array"
-    },
-    "_values" : [
-    ]
-  }
-}
-''';
-
-const String _sampleResultJsonWithIssues = r'''
-{
-  "_type" : {
-    "_name" : "ActionsInvocationRecord"
-  },
-  "actions" : {
-    "_type" : {
-      "_name" : "Array"
-    },
-    "_values" : [
-      {
-        "_type" : {
-          "_name" : "ActionRecord"
-        },
-        "actionResult" : {
-          "_type" : {
-            "_name" : "ActionResult"
-          },
-          "coverage" : {
-            "_type" : {
-              "_name" : "CodeCoverageInfo"
-            }
-          },
-          "issues" : {
-            "_type" : {
-              "_name" : "ResultIssueSummaries"
-            }
-          },
-          "metrics" : {
-            "_type" : {
-              "_name" : "ResultMetrics"
-            }
-          },
-          "resultName" : {
-            "_type" : {
-              "_name" : "String"
-            },
-            "_value" : "action"
-          },
-          "status" : {
-            "_type" : {
-              "_name" : "String"
-            },
-            "_value" : "notRequested"
-          }
-        },
-        "buildResult" : {
-          "_type" : {
-            "_name" : "ActionResult"
-          },
-          "coverage" : {
-            "_type" : {
-              "_name" : "CodeCoverageInfo"
-            }
-          },
-          "issues" : {
-            "_type" : {
-              "_name" : "ResultIssueSummaries"
-            },
-            "errorSummaries" : {
-              "_type" : {
-                "_name" : "Array"
-              },
-              "_values" : [
-                {
-                  "_type" : {
-                    "_name" : "IssueSummary"
-                  },
-                  "documentLocationInCreatingWorkspace" : {
-                    "_type" : {
-                      "_name" : "DocumentLocation"
-                    },
-                    "concreteTypeName" : {
-                      "_type" : {
-                        "_name" : "String"
-                      },
-                      "_value" : "DVTTextDocumentLocation"
-                    },
-                    "url" : {
-                      "_type" : {
-                        "_name" : "String"
-                      },
-                      "_value" : "file:\/\/\/Users\/m\/Projects\/test_create\/ios\/Runner\/AppDelegate.m#CharacterRangeLen=0&CharacterRangeLoc=263&EndingColumnNumber=56&EndingLineNumber=7&LocationEncoding=1&StartingColumnNumber=56&StartingLineNumber=7"
-                    }
-                  },
-                  "issueType" : {
-                    "_type" : {
-                      "_name" : "String"
-                    },
-                    "_value" : "Semantic Issue"
-                  },
-                  "message" : {
-                    "_type" : {
-                      "_name" : "String"
-                    },
-                    "_value" : "Use of undeclared identifier 'asdas'"
-                  }
-                }
-              ]
-            },
-            "warningSummaries" : {
-              "_type" : {
-                "_name" : "Array"
-              },
-              "_values" : [
-                {
-                  "_type" : {
-                    "_name" : "IssueSummary"
-                  },
-                  "issueType" : {
-                    "_type" : {
-                      "_name" : "String"
-                    },
-                    "_value" : "Warning"
-                  },
-                  "message" : {
-                    "_type" : {
-                      "_name" : "String"
-                    },
-                    "_value" : "The iOS deployment target 'IPHONEOS_DEPLOYMENT_TARGET' is set to 8.0, but the range of supported deployment target versions is 9.0 to 14.0.99."
-                  }
-                }
-              ]
-            }
-          },
-          "logRef" : {
-            "_type" : {
-              "_name" : "Reference"
-            },
-            "id" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "0~bjiFq9EH53z6VfWSr47dakT0w_aGcY_GFqgPuexHq1JsoKMmvf_6GLglMcWBYRCSNufKEX6l1YgbFmnuobsw5w=="
-            },
-            "targetType" : {
-              "_type" : {
-                "_name" : "TypeDefinition"
-              },
-              "name" : {
-                "_type" : {
-                  "_name" : "String"
-                },
-                "_value" : "ActivityLogSection"
-              }
-            }
-          },
-          "metrics" : {
-            "_type" : {
-              "_name" : "ResultMetrics"
-            },
-            "errorCount" : {
-              "_type" : {
-                "_name" : "Int"
-              },
-              "_value" : "1"
-            },
-            "warningCount" : {
-              "_type" : {
-                "_name" : "Int"
-              },
-              "_value" : "1"
-            }
-          },
-          "resultName" : {
-            "_type" : {
-              "_name" : "String"
-            },
-            "_value" : "build"
-          },
-          "status" : {
-            "_type" : {
-              "_name" : "String"
-            },
-            "_value" : "failed"
-          }
-        },
-        "endedTime" : {
-          "_type" : {
-            "_name" : "Date"
-          },
-          "_value" : "2020-09-28T14:31:16.931-0700"
-        },
-        "runDestination" : {
-          "_type" : {
-            "_name" : "ActionRunDestinationRecord"
-          },
-          "displayName" : {
-            "_type" : {
-              "_name" : "String"
-            },
-            "_value" : "Any iOS Device"
-          },
-          "localComputerRecord" : {
-            "_type" : {
-              "_name" : "ActionDeviceRecord"
-            },
-            "busSpeedInMHz" : {
-              "_type" : {
-                "_name" : "Int"
-              },
-              "_value" : "100"
-            },
-            "cpuCount" : {
-              "_type" : {
-                "_name" : "Int"
-              },
-              "_value" : "1"
-            },
-            "cpuKind" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "8-Core Intel Xeon W"
-            },
-            "cpuSpeedInMHz" : {
-              "_type" : {
-                "_name" : "Int"
-              },
-              "_value" : "3200"
-            },
-            "identifier" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "87BE7059-56E3-5470-B52D-31A0F76402B3"
-            },
-            "isConcreteDevice" : {
-              "_type" : {
-                "_name" : "Bool"
-              },
-              "_value" : "true"
-            },
-            "logicalCPUCoresPerPackage" : {
-              "_type" : {
-                "_name" : "Int"
-              },
-              "_value" : "16"
-            },
-            "modelCode" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "iMacPro1,1"
-            },
-            "modelName" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "iMac Pro"
-            },
-            "modelUTI" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "com.apple.imacpro-2017"
-            },
-            "name" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "My Mac"
-            },
-            "nativeArchitecture" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "x86_64h"
-            },
-            "operatingSystemVersion" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "10.15.5"
-            },
-            "operatingSystemVersionWithBuildNumber" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "10.15.5 (19F101)"
-            },
-            "physicalCPUCoresPerPackage" : {
-              "_type" : {
-                "_name" : "Int"
-              },
-              "_value" : "8"
-            },
-            "platformRecord" : {
-              "_type" : {
-                "_name" : "ActionPlatformRecord"
-              },
-              "identifier" : {
-                "_type" : {
-                  "_name" : "String"
-                },
-                "_value" : "com.apple.platform.macosx"
-              },
-              "userDescription" : {
-                "_type" : {
-                  "_name" : "String"
-                },
-                "_value" : "macOS"
-              }
-            },
-            "ramSizeInMegabytes" : {
-              "_type" : {
-                "_name" : "Int"
-              },
-              "_value" : "65536"
-            }
-          },
-          "targetArchitecture" : {
-            "_type" : {
-              "_name" : "String"
-            },
-            "_value" : "arm64e"
-          },
-          "targetDeviceRecord" : {
-            "_type" : {
-              "_name" : "ActionDeviceRecord"
-            },
-            "identifier" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "dvtdevice-DVTiPhonePlaceholder-iphoneos:placeholder"
-            },
-            "modelCode" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "GenericiOS"
-            },
-            "modelName" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "GenericiOS"
-            },
-            "modelUTI" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "com.apple.dt.Xcode.device.GenericiOS"
-            },
-            "name" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "Any iOS Device"
-            },
-            "nativeArchitecture" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "arm64e"
-            },
-            "platformRecord" : {
-              "_type" : {
-                "_name" : "ActionPlatformRecord"
-              },
-              "identifier" : {
-                "_type" : {
-                  "_name" : "String"
-                },
-                "_value" : "com.apple.platform.iphoneos"
-              },
-              "userDescription" : {
-                "_type" : {
-                  "_name" : "String"
-                },
-                "_value" : "iOS"
-              }
-            }
-          },
-          "targetSDKRecord" : {
-            "_type" : {
-              "_name" : "ActionSDKRecord"
-            },
-            "identifier" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "iphoneos14.0"
-            },
-            "name" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "iOS 14.0"
-            },
-            "operatingSystemVersion" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "14.0"
-            }
-          }
-        },
-        "schemeCommandName" : {
-          "_type" : {
-            "_name" : "String"
-          },
-          "_value" : "Run"
-        },
-        "schemeTaskName" : {
-          "_type" : {
-            "_name" : "String"
-          },
-          "_value" : "Build"
-        },
-        "startedTime" : {
-          "_type" : {
-            "_name" : "Date"
-          },
-          "_value" : "2020-09-28T14:31:13.125-0700"
-        },
-        "title" : {
-          "_type" : {
-            "_name" : "String"
-          },
-          "_value" : "Build \"Runner\""
-        }
-      }
-    ]
-  },
-  "issues" : {
-    "_type" : {
-      "_name" : "ResultIssueSummaries"
-    },
-    "errorSummaries" : {
-      "_type" : {
-        "_name" : "Array"
-      },
-      "_values" : [
-        {
-          "_type" : {
-            "_name" : "IssueSummary"
-          },
-          "documentLocationInCreatingWorkspace" : {
-            "_type" : {
-              "_name" : "DocumentLocation"
-            },
-            "concreteTypeName" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "DVTTextDocumentLocation"
-            },
-            "url" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "file:\/\/\/Users\/m\/Projects\/test_create\/ios\/Runner\/AppDelegate.m#CharacterRangeLen=0&CharacterRangeLoc=263&EndingColumnNumber=56&EndingLineNumber=7&LocationEncoding=1&StartingColumnNumber=56&StartingLineNumber=7"
-            }
-          },
-          "issueType" : {
-            "_type" : {
-              "_name" : "String"
-            },
-            "_value" : "Semantic Issue"
-          },
-          "message" : {
-            "_type" : {
-              "_name" : "String"
-            },
-            "_value" : "Use of undeclared identifier 'asdas'"
-          }
-        }
-      ]
-    },
-    "warningSummaries" : {
-      "_type" : {
-        "_name" : "Array"
-      },
-      "_values" : [
-        {
-          "_type" : {
-            "_name" : "IssueSummary"
-          },
-          "issueType" : {
-            "_type" : {
-              "_name" : "String"
-            },
-            "_value" : "Warning"
-          },
-          "message" : {
-            "_type" : {
-              "_name" : "String"
-            },
-            "_value" : "The iOS deployment target 'IPHONEOS_DEPLOYMENT_TARGET' is set to 8.0, but the range of supported deployment target versions is 9.0 to 14.0.99."
-          }
-        }
-      ]
-    }
-  },
-  "metadataRef" : {
-    "_type" : {
-      "_name" : "Reference"
-    },
-    "id" : {
-      "_type" : {
-        "_name" : "String"
-      },
-      "_value" : "0~hrKQOFMo2Ri-TrlvSpVK8vTHcYQxwuWYJuRHCjoxIleliOdh5fHOdfIALZV0S0FtjVmUB83FpKkPbWajga4wxA=="
-    },
-    "targetType" : {
-      "_type" : {
-        "_name" : "TypeDefinition"
-      },
-      "name" : {
-        "_type" : {
-          "_name" : "String"
-        },
-        "_value" : "ActionsInvocationMetadata"
-      }
-    }
-  },
-  "metrics" : {
-    "_type" : {
-      "_name" : "ResultMetrics"
-    },
-    "errorCount" : {
-      "_type" : {
-        "_name" : "Int"
-      },
-      "_value" : "1"
-    },
-    "warningCount" : {
-      "_type" : {
-        "_name" : "Int"
-      },
-      "_value" : "1"
-    }
-  }
-}
-''';
-
-const String _sampleResultJsonNoIssues = r'''
-{
-  "_type" : {
-    "_name" : "ActionsInvocationRecord"
-  },
-  "actions" : {
-    "_type" : {
-      "_name" : "Array"
-    },
-    "_values" : [
-      {
-        "_type" : {
-          "_name" : "ActionRecord"
-        },
-        "actionResult" : {
-          "_type" : {
-            "_name" : "ActionResult"
-          },
-          "coverage" : {
-            "_type" : {
-              "_name" : "CodeCoverageInfo"
-            }
-          },
-          "issues" : {
-            "_type" : {
-              "_name" : "ResultIssueSummaries"
-            }
-          },
-          "metrics" : {
-            "_type" : {
-              "_name" : "ResultMetrics"
-            }
-          },
-          "resultName" : {
-            "_type" : {
-              "_name" : "String"
-            },
-            "_value" : "action"
-          },
-          "status" : {
-            "_type" : {
-              "_name" : "String"
-            },
-            "_value" : "notRequested"
-          }
-        },
-        "buildResult" : {
-          "_type" : {
-            "_name" : "ActionResult"
-          },
-          "coverage" : {
-            "_type" : {
-              "_name" : "CodeCoverageInfo"
-            }
-          },
-          "issues" : {
-            "_type" : {
-              "_name" : "ResultIssueSummaries"
-            }
-          },
-          "logRef" : {
-            "_type" : {
-              "_name" : "Reference"
-            },
-            "id" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "0~XBP6QfgBACcao7crWD8_8W18SPIqMzlK0U0oBhSvElOM8k-vQKO4ZmCtUhL-BfTDFSylC3qEPStUI3jNsBPTXA=="
-            },
-            "targetType" : {
-              "_type" : {
-                "_name" : "TypeDefinition"
-              },
-              "name" : {
-                "_type" : {
-                  "_name" : "String"
-                },
-                "_value" : "ActivityLogSection"
-              }
-            }
-          },
-          "metrics" : {
-            "_type" : {
-              "_name" : "ResultMetrics"
-            }
-          },
-          "resultName" : {
-            "_type" : {
-              "_name" : "String"
-            },
-            "_value" : "build"
-          },
-          "status" : {
-            "_type" : {
-              "_name" : "String"
-            },
-            "_value" : "succeeded"
-          }
-        },
-        "endedTime" : {
-          "_type" : {
-            "_name" : "Date"
-          },
-          "_value" : "2021-10-27T13:13:38.875-0700"
-        },
-        "runDestination" : {
-          "_type" : {
-            "_name" : "ActionRunDestinationRecord"
-          },
-          "displayName" : {
-            "_type" : {
-              "_name" : "String"
-            },
-            "_value" : "Any iOS Device"
-          },
-          "localComputerRecord" : {
-            "_type" : {
-              "_name" : "ActionDeviceRecord"
-            },
-            "busSpeedInMHz" : {
-              "_type" : {
-                "_name" : "Int"
-              },
-              "_value" : "100"
-            },
-            "cpuCount" : {
-              "_type" : {
-                "_name" : "Int"
-              },
-              "_value" : "1"
-            },
-            "cpuKind" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "12-Core Intel Xeon E5"
-            },
-            "cpuSpeedInMHz" : {
-              "_type" : {
-                "_name" : "Int"
-              },
-              "_value" : "2700"
-            },
-            "identifier" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "2BE58010-D352-540B-92E6-9A945BA6D36D"
-            },
-            "isConcreteDevice" : {
-              "_type" : {
-                "_name" : "Bool"
-              },
-              "_value" : "true"
-            },
-            "logicalCPUCoresPerPackage" : {
-              "_type" : {
-                "_name" : "Int"
-              },
-              "_value" : "24"
-            },
-            "modelCode" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "MacPro6,1"
-            },
-            "modelName" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "Mac Pro"
-            },
-            "modelUTI" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "com.apple.macpro-cylinder"
-            },
-            "name" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "My Mac"
-            },
-            "nativeArchitecture" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "x86_64"
-            },
-            "operatingSystemVersion" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "11.6"
-            },
-            "operatingSystemVersionWithBuildNumber" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "11.6 (20G165)"
-            },
-            "physicalCPUCoresPerPackage" : {
-              "_type" : {
-                "_name" : "Int"
-              },
-              "_value" : "12"
-            },
-            "platformRecord" : {
-              "_type" : {
-                "_name" : "ActionPlatformRecord"
-              },
-              "identifier" : {
-                "_type" : {
-                  "_name" : "String"
-                },
-                "_value" : "com.apple.platform.macosx"
-              },
-              "userDescription" : {
-                "_type" : {
-                  "_name" : "String"
-                },
-                "_value" : "macOS"
-              }
-            },
-            "ramSizeInMegabytes" : {
-              "_type" : {
-                "_name" : "Int"
-              },
-              "_value" : "65536"
-            }
-          },
-          "targetArchitecture" : {
-            "_type" : {
-              "_name" : "String"
-            },
-            "_value" : "arm64e"
-          },
-          "targetDeviceRecord" : {
-            "_type" : {
-              "_name" : "ActionDeviceRecord"
-            },
-            "busSpeedInMHz" : {
-              "_type" : {
-                "_name" : "Int"
-              },
-              "_value" : "0"
-            },
-            "cpuCount" : {
-              "_type" : {
-                "_name" : "Int"
-              },
-              "_value" : "0"
-            },
-            "cpuSpeedInMHz" : {
-              "_type" : {
-                "_name" : "Int"
-              },
-              "_value" : "0"
-            },
-            "identifier" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "dvtdevice-DVTiPhonePlaceholder-iphoneos:placeholder"
-            },
-            "logicalCPUCoresPerPackage" : {
-              "_type" : {
-                "_name" : "Int"
-              },
-              "_value" : "0"
-            },
-            "modelCode" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "GenericiOS"
-            },
-            "modelName" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "GenericiOS"
-            },
-            "modelUTI" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "com.apple.dt.Xcode.device.GenericiOS"
-            },
-            "name" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "Any iOS Device"
-            },
-            "nativeArchitecture" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "arm64e"
-            },
-            "physicalCPUCoresPerPackage" : {
-              "_type" : {
-                "_name" : "Int"
-              },
-              "_value" : "0"
-            },
-            "platformRecord" : {
-              "_type" : {
-                "_name" : "ActionPlatformRecord"
-              },
-              "identifier" : {
-                "_type" : {
-                  "_name" : "String"
-                },
-                "_value" : "com.apple.platform.iphoneos"
-              },
-              "userDescription" : {
-                "_type" : {
-                  "_name" : "String"
-                },
-                "_value" : "iOS"
-              }
-            },
-            "ramSizeInMegabytes" : {
-              "_type" : {
-                "_name" : "Int"
-              },
-              "_value" : "0"
-            }
-          },
-          "targetSDKRecord" : {
-            "_type" : {
-              "_name" : "ActionSDKRecord"
-            },
-            "identifier" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "iphoneos15.0"
-            },
-            "name" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "iOS 15.0"
-            },
-            "operatingSystemVersion" : {
-              "_type" : {
-                "_name" : "String"
-              },
-              "_value" : "15.0"
-            }
-          }
-        },
-        "schemeCommandName" : {
-          "_type" : {
-            "_name" : "String"
-          },
-          "_value" : "Run"
-        },
-        "schemeTaskName" : {
-          "_type" : {
-            "_name" : "String"
-          },
-          "_value" : "Build"
-        },
-        "startedTime" : {
-          "_type" : {
-            "_name" : "Date"
-          },
-          "_value" : "2021-10-27T13:13:02.396-0700"
-        },
-        "title" : {
-          "_type" : {
-            "_name" : "String"
-          },
-          "_value" : "Build \"XCResultTestApp\""
-        }
-      }
-    ]
-  },
-  "issues" : {
-    "_type" : {
-      "_name" : "ResultIssueSummaries"
-    }
-  },
-  "metadataRef" : {
-    "_type" : {
-      "_name" : "Reference"
-    },
-    "id" : {
-      "_type" : {
-        "_name" : "String"
-      },
-      "_value" : "0~4PY3oMxYEC19JHgIcIfOFnFe-ngUSzJD4NzcBevC8Y2-5y41lCyXxYXhi9eObvKdlU14arnDn8ilaTw6B_bbQQ=="
-    },
-    "targetType" : {
-      "_type" : {
-        "_name" : "TypeDefinition"
-      },
-      "name" : {
-        "_type" : {
-          "_name" : "String"
-        },
-        "_value" : "ActionsInvocationMetadata"
-      }
-    }
-  },
-  "metrics" : {
-    "_type" : {
-      "_name" : "ResultMetrics"
-    }
-  }
-}
-
-''';
-
-const String _tempResultPath = 'temp';
+const _tempResultPath = 'temp';

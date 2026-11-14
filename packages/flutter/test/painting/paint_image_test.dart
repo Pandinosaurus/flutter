@@ -5,7 +5,7 @@
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 class TestCanvas implements Canvas {
@@ -20,10 +20,12 @@ class TestCanvas implements Canvas {
 void main() {
   late ui.Image image300x300;
   late ui.Image image300x200;
+  late ui.Image image208x142;
 
   setUpAll(() async {
     image300x300 = await createTestImage(width: 300, height: 300, cache: false);
     image300x200 = await createTestImage(width: 300, height: 200, cache: false);
+    image208x142 = await createTestImage(width: 208, height: 142, cache: false);
   });
 
   setUp(() {
@@ -31,7 +33,7 @@ void main() {
   });
 
   test('Cover and align', () async {
-    final TestCanvas canvas = TestCanvas();
+    final canvas = TestCanvas();
     paintImage(
       canvas: canvas,
       rect: const Rect.fromLTWH(50.0, 75.0, 200.0, 100.0),
@@ -52,16 +54,21 @@ void main() {
 
   test('debugInvertOversizedImages', () async {
     debugInvertOversizedImages = true;
-    expect(PaintingBinding.instance!.window.devicePixelRatio != 1.0, true);
+    expect(
+      PaintingBinding.instance.platformDispatcher.views.any(
+        (ui.FlutterView view) => view.devicePixelRatio > 1.0,
+      ),
+      isTrue,
+    );
     final FlutterExceptionHandler? oldFlutterError = FlutterError.onError;
 
-    final List<String> messages = <String>[];
+    final messages = <String>[];
     FlutterError.onError = (FlutterErrorDetails details) {
       messages.add(details.exceptionAsString());
     };
 
-    final TestCanvas canvas = TestCanvas();
-    const Rect rect = Rect.fromLTWH(50.0, 50.0, 100.0, 50.0);
+    final canvas = TestCanvas();
+    const rect = Rect.fromLTWH(50.0, 50.0, 100.0, 50.0);
 
     paintImage(
       canvas: canvas,
@@ -72,19 +79,35 @@ void main() {
     );
 
     final List<Invocation> commands = canvas.invocations
-      .skipWhile((Invocation invocation) => invocation.memberName != #saveLayer)
-      .take(4)
-      .toList();
+        .skipWhile((Invocation invocation) => invocation.memberName != #saveLayer)
+        .take(4)
+        .toList();
 
     expect(commands[0].positionalArguments[0], rect);
-    final Paint paint = commands[0].positionalArguments[1] as Paint;
+    final paint = commands[0].positionalArguments[1] as Paint;
     expect(
       paint.colorFilter,
       const ColorFilter.matrix(<double>[
-        -1,  0,  0, 0, 255,
-         0, -1,  0, 0, 255,
-         0,  0, -1, 0, 255,
-         0,  0,  0, 1,   0,
+        -1,
+        0,
+        0,
+        0,
+        255,
+        0,
+        -1,
+        0,
+        0,
+        255,
+        0,
+        0,
+        -1,
+        0,
+        255,
+        0,
+        0,
+        0,
+        1,
+        0,
       ]),
     );
     expect(commands[1].memberName, #translate);
@@ -95,14 +118,13 @@ void main() {
     expect(commands[2].positionalArguments[0], 1.0);
     expect(commands[2].positionalArguments[1], -1.0);
 
-
     expect(commands[3].memberName, #translate);
     expect(commands[3].positionalArguments[0], 0.0);
     expect(commands[3].positionalArguments[1], -75.0);
 
     expect(
       messages.single,
-      'Image TestImage has a display size of 300×150 but a decode size of 300×300, which uses an additional 234KB.\n\n'
+      'Image TestImage has a display size of 300×150 but a decode size of 300×300, which uses an additional 234KB (assuming a device pixel ratio of ${3.0}).\n\n'
       'Consider resizing the asset ahead of time, supplying a cacheWidth parameter of 300, a cacheHeight parameter of 150, or using a ResizeImage.',
     );
 
@@ -114,7 +136,7 @@ void main() {
     debugInvertOversizedImages = true;
     final FlutterExceptionHandler? oldFlutterError = FlutterError.onError;
 
-    final List<String> messages = <String>[];
+    final messages = <String>[];
     FlutterError.onError = (FlutterErrorDetails details) {
       messages.add(details.exceptionAsString());
     };
@@ -122,8 +144,8 @@ void main() {
     try {
       // Create a 290x290 sized image, which is ~24kb less than the allocated size,
       // and below the default debugImageOverheadAllowance size of 128kb.
-      const Rect rect = Rect.fromLTWH(50.0, 50.0, 290.0, 290.0);
-      final TestCanvas canvas = TestCanvas();
+      const rect = Rect.fromLTWH(50.0, 50.0, 290.0, 290.0);
+      final canvas = TestCanvas();
 
       paintImage(
         canvas: canvas,
@@ -141,7 +163,7 @@ void main() {
   });
 
   test('centerSlice with scale ≠ 1', () async {
-    final TestCanvas canvas = TestCanvas();
+    final canvas = TestCanvas();
     paintImage(
       canvas: canvas,
       rect: const Rect.fromLTRB(10, 20, 430, 420),
@@ -160,15 +182,60 @@ void main() {
     expect(command.positionalArguments[2], equals(const Rect.fromLTRB(20.0, 40.0, 860.0, 840.0)));
   });
 
+  test('centerSlice tolerates floating-point rounding when scale divides unevenly', () async {
+    // Regression test for https://github.com/flutter/flutter/issues/27827.
+    // With image=208x142, scale=3 and a centerSlice large enough that the
+    // destination rect still encloses the borders, `inputSize / scale * scale`
+    // does not exactly round-trip through floating-point. The strict-equality
+    // assertion that used to live here would fail by a few ULPs.
+    final canvas = TestCanvas();
+    paintImage(
+      canvas: canvas,
+      rect: const Rect.fromLTWH(0.0, 0.0, 200.0, 100.0),
+      image: image208x142,
+      scale: 3.0,
+      centerSlice: const Rect.fromLTRB(15.0, 15.0, 17.0, 17.0),
+    );
+
+    final Invocation command = canvas.invocations.firstWhere((Invocation invocation) {
+      return invocation.memberName == #drawImageNine;
+    });
+    expect(command.positionalArguments[0], equals(image208x142));
+  });
+
+  test(
+    'centerSlice does not throw when the destination rect is smaller than the slice borders',
+    () async {
+      // Regression test for https://github.com/flutter/flutter/issues/27827.
+      // With a 100x46 rect and a 208x142 image at scale 3, subtracting the
+      // slice borders from `outputSize` makes it non-positive. `applyBoxFit`
+      // then degenerates to `Size.zero` and the legacy strict-equality
+      // assertion fired against the inner-input size for that unrelated reason.
+      final canvas = TestCanvas();
+      paintImage(
+        canvas: canvas,
+        rect: const Rect.fromLTWH(0.0, 0.0, 100.0, 46.0),
+        image: image208x142,
+        scale: 3.0,
+        centerSlice: const Rect.fromLTRB(15.5, 15.5, 16.5, 16.5),
+      );
+
+      final Invocation command = canvas.invocations.firstWhere((Invocation invocation) {
+        return invocation.memberName == #drawImageNine;
+      });
+      expect(command.positionalArguments[0], equals(image208x142));
+    },
+  );
+
   testWidgets('Reports Image painting', (WidgetTester tester) async {
     late ImageSizeInfo imageSizeInfo;
-    int count = 0;
+    var count = 0;
     debugOnPaintImage = (ImageSizeInfo info) {
       count += 1;
       imageSizeInfo = info;
     };
 
-    final TestCanvas canvas = TestCanvas();
+    final canvas = TestCanvas();
     paintImage(
       canvas: canvas,
       rect: const Rect.fromLTWH(50.0, 75.0, 200.0, 100.0),
@@ -180,7 +247,7 @@ void main() {
     expect(imageSizeInfo, isNotNull);
     expect(imageSizeInfo.source, 'test.png');
     expect(imageSizeInfo.imageSize, const Size(300, 300));
-    expect(imageSizeInfo.displaySize, const Size(200, 100) * PaintingBinding.instance!.window.devicePixelRatio);
+    expect(imageSizeInfo.displaySize, const Size(200, 100) * tester.view.devicePixelRatio);
 
     // Make sure that we don't report an identical image size info if we
     // redraw in the next frame.
@@ -201,13 +268,13 @@ void main() {
 
   testWidgets('Reports Image painting - change per frame', (WidgetTester tester) async {
     late ImageSizeInfo imageSizeInfo;
-    int count = 0;
+    var count = 0;
     debugOnPaintImage = (ImageSizeInfo info) {
       count += 1;
       imageSizeInfo = info;
     };
 
-    final TestCanvas canvas = TestCanvas();
+    final canvas = TestCanvas();
     paintImage(
       canvas: canvas,
       rect: const Rect.fromLTWH(50.0, 75.0, 200.0, 100.0),
@@ -219,7 +286,7 @@ void main() {
     expect(imageSizeInfo, isNotNull);
     expect(imageSizeInfo.source, 'test.png');
     expect(imageSizeInfo.imageSize, const Size(300, 300));
-    expect(imageSizeInfo.displaySize, const Size(200, 100) * PaintingBinding.instance!.window.devicePixelRatio);
+    expect(imageSizeInfo.displaySize, const Size(200, 100) * tester.view.devicePixelRatio);
 
     // Make sure that we don't report an identical image size info if we
     // redraw in the next frame.
@@ -237,20 +304,20 @@ void main() {
     expect(imageSizeInfo, isNotNull);
     expect(imageSizeInfo.source, 'test.png');
     expect(imageSizeInfo.imageSize, const Size(300, 300));
-    expect(imageSizeInfo.displaySize, const Size(200, 150) * PaintingBinding.instance!.window.devicePixelRatio);
+    expect(imageSizeInfo.displaySize, const Size(200, 150) * tester.view.devicePixelRatio);
 
     debugOnPaintImage = null;
   });
 
   testWidgets('Reports Image painting - no debug label', (WidgetTester tester) async {
     late ImageSizeInfo imageSizeInfo;
-    int count = 0;
+    var count = 0;
     debugOnPaintImage = (ImageSizeInfo info) {
       count += 1;
       imageSizeInfo = info;
     };
 
-    final TestCanvas canvas = TestCanvas();
+    final canvas = TestCanvas();
     paintImage(
       canvas: canvas,
       rect: const Rect.fromLTWH(50.0, 75.0, 200.0, 100.0),
@@ -261,7 +328,7 @@ void main() {
     expect(imageSizeInfo, isNotNull);
     expect(imageSizeInfo.source, '<Unknown Image(300×200)>');
     expect(imageSizeInfo.imageSize, const Size(300, 200));
-    expect(imageSizeInfo.displaySize, const Size(200, 100) * PaintingBinding.instance!.window.devicePixelRatio);
+    expect(imageSizeInfo.displaySize, const Size(200, 100) * tester.view.devicePixelRatio);
 
     debugOnPaintImage = null;
   });

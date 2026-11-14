@@ -7,7 +7,7 @@
 /// Should not be tag-enforced, no analysis failures should be found.
 ///
 /// {@tool snippet}
-/// Sample invocations of [matchesGoldenFile].
+/// Sample invocations of `matchesGoldenFile`.
 ///
 /// ```dart
 /// await expectLater(
@@ -35,7 +35,7 @@
 /// ```
 /// {@end-tool}
 ///
-
+String? foo;
 // Other comments
 // matchesGoldenFile('comment.png');
 

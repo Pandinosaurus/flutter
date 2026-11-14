@@ -4,12 +4,13 @@
 
 import 'dart:async';
 
-import 'package:dds/dap.dart' hide DapServer;
+import 'package:dap_adapters/dap_adapters.dart' hide DapServer;
 
 import '../base/file_system.dart';
 import '../base/platform.dart';
-import '../debug_adapters/flutter_adapter.dart';
-import '../debug_adapters/flutter_adapter_args.dart';
+import '../cache.dart';
+import 'flutter_adapter.dart';
+import 'flutter_adapter_args.dart';
 import 'flutter_test_adapter.dart';
 
 /// A DAP server that communicates over a [ByteStreamServerChannel], usually constructed from the processes stdin/stdout streams.
@@ -21,30 +22,40 @@ import 'flutter_test_adapter.dart';
 /// adapters.
 class DapServer {
   DapServer(
-    Stream<List<int>> _input,
-    StreamSink<List<int>> _output, {
+    Stream<List<int>> input,
+    StreamSink<List<int>> output, {
     required FileSystem fileSystem,
     required Platform platform,
-    this.ipv6 = false,
-    this.enableDds = true,
+    required Cache cache,
     this.enableAuthCodes = true,
-    bool test = false,
+    this.enableDds = true,
+    this.ipv6 = false,
     this.logger,
-  }) : channel = ByteStreamServerChannel(_input, _output, logger) {
+    void Function(Object? e)? onError,
+    bool test = false,
+  }) : channel = ByteStreamServerChannel(input, output, logger) {
     adapter = test
-        ? FlutterTestDebugAdapter(channel,
+        ? FlutterTestDebugAdapter(
+            channel,
             fileSystem: fileSystem,
             platform: platform,
+            cache: cache,
             ipv6: ipv6,
-            enableDds: enableDds,
+            enableFlutterDds: enableDds,
             enableAuthCodes: enableAuthCodes,
-            logger: logger)
-        : FlutterDebugAdapter(channel,
+            logger: logger,
+            onError: onError,
+          )
+        : FlutterDebugAdapter(
+            channel,
             fileSystem: fileSystem,
             platform: platform,
-            enableDds: enableDds,
+            cache: cache,
+            enableFlutterDds: enableDds,
             enableAuthCodes: enableAuthCodes,
-            logger: logger);
+            logger: logger,
+            onError: onError,
+          );
   }
 
   final ByteStreamServerChannel channel;

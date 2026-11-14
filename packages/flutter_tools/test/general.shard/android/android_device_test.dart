@@ -17,10 +17,13 @@ import 'package:flutter_tools/src/base/platform.dart';
 import 'package:flutter_tools/src/build_info.dart';
 import 'package:flutter_tools/src/device.dart';
 import 'package:flutter_tools/src/project.dart';
+import 'package:flutter_tools/src/vmservice.dart';
 import 'package:test/fake.dart';
+import 'package:vm_service/vm_service.dart';
 
 import '../../src/common.dart';
 import '../../src/fake_process_manager.dart';
+import '../../src/fakes.dart' show FakeConfig;
 
 void main() {
   testWithoutContext('AndroidDevice stores the requested id', () {
@@ -39,13 +42,13 @@ void main() {
   });
 
   testWithoutContext('adb exiting with heap corruption is only allowed on windows', () async {
-    final List<FakeCommand> commands = <FakeCommand>[
+    final commands = <FakeCommand>[
       const FakeCommand(
         command: <String>['adb', '-s', '1234', 'shell', 'getprop'],
         stdout: '[ro.hardware]: [goldfish]\n[ro.build.characteristics]: [unused]',
         // Heap corruption exit code.
         exitCode: -1073740940,
-      )
+      ),
     ];
 
     final AndroidDevice windowsDevice = setUpAndroidDevice(
@@ -58,7 +61,7 @@ void main() {
     );
     final AndroidDevice macOsDevice = setUpAndroidDevice(
       processManager: FakeProcessManager.list(commands.toList()),
-      platform: FakePlatform(operatingSystem: 'macos')
+      platform: FakePlatform(operatingSystem: 'macos'),
     );
 
     // Parsing succeeds despite the error.
@@ -70,13 +73,11 @@ void main() {
   });
 
   testWithoutContext('AndroidDevice can detect TargetPlatform from property '
-    'abi and abiList', () async {
-      // The format is [ABI, ABI list]: expected target platform.
-    final Map<List<String>, TargetPlatform> values = <List<String>, TargetPlatform>{
+      'abi and abiList', () async {
+    // The format is [ABI, ABI list]: expected target platform.
+    final values = <List<String>, TargetPlatform>{
       <String>['x86_64', 'unknown']: TargetPlatform.android_x64,
-      <String>['x86', 'unknown']: TargetPlatform.android_x86,
-      // The default ABI is arm32
-      <String>['???', 'unknown']: TargetPlatform.android_arm,
+      <String>['armeabi-v7a', 'unknown']: TargetPlatform.android_arm,
       <String>['arm64-v8a', 'arm64-v8a,']: TargetPlatform.android_arm64,
       // The Kindle Fire runs 32 bit apps on 64 bit hardware.
       <String>['arm64-v8a', 'arm']: TargetPlatform.android_arm,
@@ -87,9 +88,10 @@ void main() {
         processManager: FakeProcessManager.list(<FakeCommand>[
           FakeCommand(
             command: const <String>['adb', '-s', '1234', 'shell', 'getprop'],
-            stdout: '[ro.product.cpu.abi]: [${entry.key.first}]\n'
-              '[ro.product.cpu.abilist]: [${entry.key.last}]'
-          )
+            stdout:
+                '[ro.product.cpu.abi]: [${entry.key.first}]\n'
+                '[ro.product.cpu.abilist]: [${entry.key.last}]',
+          ),
         ]),
       );
 
@@ -98,13 +100,11 @@ void main() {
   });
 
   testWithoutContext('AndroidDevice supports profile/release mode on arm and x64 targets '
-    'abi and abiList', () async {
-      // The format is [ABI, ABI list]: expected release mode support.
-    final Map<List<String>, bool> values = <List<String>, bool>{
+      'abi and abiList', () async {
+    // The format is [ABI, ABI list]: expected release mode support.
+    final values = <List<String>, bool>{
       <String>['x86_64', 'unknown']: true,
-      <String>['x86', 'unknown']: false,
-      // The default ABI is arm32
-      <String>['???', 'unknown']: true,
+      <String>['armeabi-v7a', 'unknown']: true,
       <String>['arm64-v8a', 'arm64-v8a,']: true,
       // The Kindle Fire runs 32 bit apps on 64 bit hardware.
       <String>['arm64-v8a', 'arm']: true,
@@ -115,9 +115,10 @@ void main() {
         processManager: FakeProcessManager.list(<FakeCommand>[
           FakeCommand(
             command: const <String>['adb', '-s', '1234', 'shell', 'getprop'],
-            stdout: '[ro.product.cpu.abi]: [${entry.key.first}]\n'
-              '[ro.product.cpu.abilist]: [${entry.key.last}]'
-          )
+            stdout:
+                '[ro.product.cpu.abi]: [${entry.key.first}]\n'
+                '[ro.product.cpu.abilist]: [${entry.key.last}]',
+          ),
         ]),
       );
 
@@ -134,13 +135,12 @@ void main() {
       final AndroidDevice device = setUpAndroidDevice(
         processManager: FakeProcessManager.list(<FakeCommand>[
           FakeCommand(
-            command: const <String>[
-              'adb', '-s', '1234', 'shell', 'getprop',
-            ],
-            stdout: '[ro.hardware]: [$hardware]\n'
-              '[ro.build.characteristics]: [unused]'
+            command: const <String>['adb', '-s', '1234', 'shell', 'getprop'],
+            stdout:
+                '[ro.hardware]: [$hardware]\n'
+                '[ro.build.characteristics]: [unused]',
           ),
-        ])
+        ]),
       );
 
       expect(await device.isLocalEmulator, kKnownHardware[hardware] == HardwareType.emulator);
@@ -151,13 +151,12 @@ void main() {
     final AndroidDevice device = setUpAndroidDevice(
       processManager: FakeProcessManager.list(<FakeCommand>[
         const FakeCommand(
-          command: <String>[
-            'adb', '-s', '1234', 'shell', 'getprop',
-          ],
-          stdout: '[ro.hardware]: [unknown]\n'
-            '[ro.build.characteristics]: [att]'
+          command: <String>['adb', '-s', '1234', 'shell', 'getprop'],
+          stdout:
+              '[ro.hardware]: [unknown]\n'
+              '[ro.build.characteristics]: [att]',
         ),
-      ])
+      ]),
     );
 
     expect(await device.isLocalEmulator, false);
@@ -167,16 +166,26 @@ void main() {
     final AndroidDevice device = setUpAndroidDevice(
       processManager: FakeProcessManager.list(<FakeCommand>[
         const FakeCommand(
-          command: <String>[
-            'adb', '-s', '1234', 'shell', 'getprop',
-          ],
-          stdout: '[ro.hardware]: [unknown]\n'
-            '[ro.build.characteristics]: [att,emulator]'
+          command: <String>['adb', '-s', '1234', 'shell', 'getprop'],
+          stdout:
+              '[ro.hardware]: [unknown]\n'
+              '[ro.build.characteristics]: [att,emulator]',
         ),
-      ])
+      ]),
     );
 
     expect(await device.isLocalEmulator, true);
+  });
+
+  testWithoutContext('isSupported is false for x86 devices', () async {
+    final processManager = FakeProcessManager.list(<FakeCommand>[
+      const FakeCommand(
+        command: <String>['adb', '-s', '1234', 'shell', 'getprop'],
+        stdout: '[ro.product.cpu.abi]: [x86]',
+      ),
+    ]);
+    final AndroidDevice device = setUpAndroidDevice(processManager: processManager);
+    expect(await device.isSupported(), false);
   });
 
   testWithoutContext('isSupportedForProject is true on module project', () async {
@@ -189,10 +198,10 @@ name: example
 flutter:
   module: {}
 ''');
-    fileSystem.file('.packages').createSync();
     final FlutterProject flutterProject = FlutterProjectFactory(
       fileSystem: fileSystem,
       logger: BufferLogger.test(),
+      config: FakeConfig(),
     ).fromDirectory(fileSystem.currentDirectory);
     final AndroidDevice device = setUpAndroidDevice(fileSystem: fileSystem);
 
@@ -202,11 +211,11 @@ flutter:
   testWithoutContext('isSupportedForProject is true with editable host app', () async {
     final FileSystem fileSystem = MemoryFileSystem.test();
     fileSystem.file('pubspec.yaml').createSync();
-    fileSystem.file('.packages').createSync();
     fileSystem.directory('android').createSync();
     final FlutterProject flutterProject = FlutterProjectFactory(
       fileSystem: fileSystem,
       logger: BufferLogger.test(),
+      config: FakeConfig(),
     ).fromDirectory(fileSystem.currentDirectory);
 
     final AndroidDevice device = setUpAndroidDevice(fileSystem: fileSystem);
@@ -217,10 +226,10 @@ flutter:
   testWithoutContext('isSupportedForProject is false with no host app and no module', () async {
     final FileSystem fileSystem = MemoryFileSystem.test();
     fileSystem.file('pubspec.yaml').createSync();
-    fileSystem.file('.packages').createSync();
     final FlutterProject flutterProject = FlutterProjectFactory(
       fileSystem: fileSystem,
       logger: BufferLogger.test(),
+      config: FakeConfig(),
     ).fromDirectory(fileSystem.currentDirectory);
 
     final AndroidDevice device = setUpAndroidDevice(fileSystem: fileSystem);
@@ -233,19 +242,19 @@ flutter:
       processManager: FakeProcessManager.list(<FakeCommand>[
         const FakeCommand(
           command: <String>['adb', '-s', 'emulator-5555', 'shell', 'getprop'],
-          stdout: '[ro.hardware]: [goldfish]'
-        )
+          stdout: '[ro.hardware]: [goldfish]',
+        ),
       ]),
       id: 'emulator-5555',
       androidConsoleSocketFactory: (String host, int port) async =>
-        FakeWorkingAndroidConsoleSocket('dummyEmulatorId'),
+          FakeWorkingAndroidConsoleSocket('dummyEmulatorId'),
     );
 
     expect(await device.emulatorId, equals('dummyEmulatorId'));
   });
 
   testWithoutContext('AndroidDevice does not create socket for non-emulator devices', () async {
-    bool socketWasCreated = false;
+    var socketWasCreated = false;
 
     // Still use an emulator-looking ID so we can be sure the failure is due
     // to the isLocalEmulator field and not because the ID doesn't contain a
@@ -255,13 +264,13 @@ flutter:
       processManager: FakeProcessManager.list(<FakeCommand>[
         const FakeCommand(
           command: <String>['adb', '-s', 'emulator-5555', 'shell', 'getprop'],
-          stdout: '[ro.hardware]: [samsungexynos7420]'
-        )
+          stdout: '[ro.hardware]: [samsungexynos7420]',
+        ),
       ]),
       androidConsoleSocketFactory: (String host, int port) async {
         socketWasCreated = true;
-        throw 'Socket was created for non-emulator';
-      }
+        throw Exception('Socket was created for non-emulator');
+      },
     );
 
     expect(await device.emulatorId, isNull);
@@ -269,17 +278,17 @@ flutter:
   });
 
   testWithoutContext('AndroidDevice does not create socket for emulators with no port', () async {
-    bool socketWasCreated = false;
+    var socketWasCreated = false;
     final AndroidDevice device = setUpAndroidDevice(
       processManager: FakeProcessManager.list(<FakeCommand>[
         const FakeCommand(
           command: <String>['adb', '-s', '1234', 'shell', 'getprop'],
-          stdout: '[ro.hardware]: [goldfish]'
-        )
+          stdout: '[ro.hardware]: [goldfish]',
+        ),
       ]),
       androidConsoleSocketFactory: (String host, int port) async {
         socketWasCreated = true;
-        throw 'Socket was created for emulator without port in ID';
+        throw Exception('Socket was created for emulator without port in ID');
       },
     );
 
@@ -292,8 +301,8 @@ flutter:
       processManager: FakeProcessManager.list(<FakeCommand>[
         const FakeCommand(
           command: <String>['adb', '-s', '1234', 'shell', 'getprop'],
-          stdout: '[ro.hardware]: [goldfish]'
-        )
+          stdout: '[ro.hardware]: [goldfish]',
+        ),
       ]),
       androidConsoleSocketFactory: (String host, int port) => throw Exception('Fake socket error'),
     );
@@ -306,11 +315,11 @@ flutter:
       processManager: FakeProcessManager.list(<FakeCommand>[
         const FakeCommand(
           command: <String>['adb', '-s', '1234', 'shell', 'getprop'],
-          stdout: '[ro.hardware]: [goldfish]'
-        )
+          stdout: '[ro.hardware]: [goldfish]',
+        ),
       ]),
       androidConsoleSocketFactory: (String host, int port) async =>
-        FakeUnresponsiveAndroidConsoleSocket(),
+          FakeUnresponsiveAndroidConsoleSocket(),
     );
 
     expect(await device.emulatorId, isNull);
@@ -321,57 +330,115 @@ flutter:
       processManager: FakeProcessManager.list(<FakeCommand>[
         const FakeCommand(
           command: <String>['adb', '-s', '1234', 'shell', 'getprop'],
-          stdout: '[ro.hardware]: [goldfish]'
-        )
+          stdout: '[ro.hardware]: [goldfish]',
+        ),
       ]),
       androidConsoleSocketFactory: (String host, int port) async =>
-        FakeDisconnectingAndroidConsoleSocket()
+          FakeDisconnectingAndroidConsoleSocket(),
     );
 
     expect(await device.emulatorId, isNull);
   });
 
-  testWithoutContext('AndroidDevice lastLogcatTimestamp returns null if shell command failed', () async {
+  testWithoutContext(
+    'AndroidConsole handles socket.done completing with a SocketException',
+    () async {
+      final doneCompleter = Completer<void>();
+      final socket = FakeWorkingAndroidConsoleSocket('dummyEmulatorId', done: doneCompleter.future);
+      final console = AndroidConsole(socket);
+      await console.connect();
+
+      doneCompleter.completeError(
+        const SocketException(
+          'Error event raised in event handler : error condition has been reset',
+          port: 0,
+        ),
+      );
+      await pumpEventQueue();
+
+      expect(await console.getAvdName(), equals('dummyEmulatorId'));
+      console.destroy();
+    },
+  );
+
+  testWithoutContext('AndroidDevice clearLogs does not crash', () async {
     final AndroidDevice device = setUpAndroidDevice(
       processManager: FakeProcessManager.list(<FakeCommand>[
-        const FakeCommand(
-          command: <String>['adb', '-s', '1234', 'shell', '-x', 'logcat', '-v', 'time', '-t', '1'],
-          exitCode: 1,
-        )
-      ])
+        const FakeCommand(command: <String>['adb', '-s', '1234', 'logcat', '-c'], exitCode: 1),
+      ]),
     );
-
-    expect(await device.lastLogcatTimestamp(), isNull);
+    device.clearLogs();
   });
 
-  testWithoutContext('AndroidDevice AdbLogReaders for past+future and future logs are not the same', () async {
-    final AndroidDevice device = setUpAndroidDevice(
-      processManager: FakeProcessManager.list(<FakeCommand>[
-        const FakeCommand(
-          command: <String>['adb', '-s', '1234', 'shell', 'getprop'],
-          stdout: '[ro.build.version.sdk]: [23]',
-          exitCode: 1,
-        ),
-        const FakeCommand(
-          command: <String>['adb', '-s', '1234', 'shell', '-x', 'logcat', '-v', 'time', '-s', 'flutter'],
-        ),
-        const FakeCommand(
-          command: <String>['adb', '-s', '1234', 'shell', '-x', 'logcat', '-v', 'time'],
-        )
-      ])
-    );
+  testWithoutContext(
+    'AndroidDevice lastLogcatTimestamp returns null if shell command failed',
+    () async {
+      final AndroidDevice device = setUpAndroidDevice(
+        processManager: FakeProcessManager.list(<FakeCommand>[
+          const FakeCommand(
+            command: <String>[
+              'adb',
+              '-s',
+              '1234',
+              'shell',
+              '-x',
+              'logcat',
+              '-v',
+              'time',
+              '-t',
+              '1',
+            ],
+            exitCode: 1,
+          ),
+        ]),
+      );
 
-    final DeviceLogReader pastLogReader = await device.getLogReader(includePastLogs: true);
-    final DeviceLogReader defaultLogReader = await device.getLogReader();
-    expect(pastLogReader, isNot(equals(defaultLogReader)));
+      expect(await device.lastLogcatTimestamp(), isNull);
+    },
+  );
 
-    // Getting again is cached.
-    expect(pastLogReader, equals(await device.getLogReader(includePastLogs: true)));
-    expect(defaultLogReader, equals(await device.getLogReader()));
-  });
+  testWithoutContext(
+    'AndroidDevice AdbLogReaders for past+future and future logs are not the same',
+    () async {
+      final AndroidDevice device = setUpAndroidDevice(
+        processManager: FakeProcessManager.list(<FakeCommand>[
+          const FakeCommand(
+            command: <String>['adb', '-s', '1234', 'shell', 'getprop'],
+            stdout: '[ro.build.version.sdk]: [23]',
+            exitCode: 1,
+          ),
+          const FakeCommand(
+            command: <String>[
+              'adb',
+              '-s',
+              '1234',
+              'shell',
+              '-x',
+              'logcat',
+              '-v',
+              'time',
+              '-s',
+              'flutter',
+            ],
+          ),
+          const FakeCommand(
+            command: <String>['adb', '-s', '1234', 'shell', '-x', 'logcat', '-v', 'time'],
+          ),
+        ]),
+      );
+
+      final DeviceLogReader pastLogReader = await device.getLogReader(includePastLogs: true);
+      final DeviceLogReader defaultLogReader = await device.getLogReader();
+      expect(pastLogReader, isNot(equals(defaultLogReader)));
+
+      // Getting again is cached.
+      expect(pastLogReader, equals(await device.getLogReader(includePastLogs: true)));
+      expect(defaultLogReader, equals(await device.getLogReader()));
+    },
+  );
 
   testWithoutContext('Can parse adb shell dumpsys info', () {
-    const String exampleOutput = r'''
+    const exampleOutput = r'''
 Applications Memory Usage (in Kilobytes):
 Uptime: 441088659 Realtime: 521464097
 
@@ -454,6 +521,118 @@ Uptime: 441088659 Realtime: 521464097
     // contains identifier for platform in memory info.
     expect(json, containsPair('platform', 'Android'));
   });
+
+  testWithoutContext('AndroidDevice stopApp does nothing if app is not passed', () async {
+    final AndroidDevice device = setUpAndroidDevice();
+
+    expect(await device.stopApp(null), isFalse);
+  });
+
+  testWithoutContext(
+    'AdbLogReader.provideVmService catches any RPCError due to VM service disconnection by text',
+    () async {
+      final logger = BufferLogger.test();
+      final vmService = FlutterVmService(_MyFakeVmServiceConnectionDisposedText());
+      final logReader = AdbLogReader.test(FakeProcess(), 'foo', logger);
+      await logReader.provideVmService(vmService);
+      expect(
+        logger.traceText,
+        'VmService.getVm call failed: null: (-32000) '
+        'Service connection disposed\n',
+      );
+      expect(
+        logger.errorText,
+        'An error occurred when setting up filtering for adb logs. '
+        'Unable to communicate with the VM service.\n',
+      );
+    },
+  );
+
+  testWithoutContext(
+    'AdbLogReader.provideVmService catches any RPCError due to VM service disconnection by code',
+    () async {
+      final logger = BufferLogger.test();
+      final vmService = FlutterVmService(_MyFakeVmServiceConnectionDisposedCode());
+      final logReader = AdbLogReader.test(FakeProcess(), 'foo', logger);
+      await logReader.provideVmService(vmService);
+      expect(
+        logger.traceText,
+        'VmService.getVm call failed: null: (-32010) '
+        'Dummy text not matched\n',
+      );
+      expect(
+        logger.errorText,
+        'An error occurred when setting up filtering for adb logs. '
+        'Unable to communicate with the VM service.\n',
+      );
+    },
+  );
+
+  testWithoutContext('AdbLogReader filters logs by default (adbLogFiltering = true)', () async {
+    final logger = BufferLogger.test();
+    final logReader = AdbLogReader.test(
+      FakeProcess(
+        stdout: utf8.encode(
+          '05-12 00:00:00.000 I/some_tag( 123): secret log\n'
+          '05-12 00:00:00.000 I/flutter( 123): allowed log\n',
+        ),
+      ),
+      'foo',
+      logger,
+    );
+    final List<String> receivedLines = [];
+    final StreamSubscription<String> subscription = logReader.logLines.listen(receivedLines.add);
+
+    await Future<void>.delayed(Duration.zero);
+    await subscription.cancel();
+
+    expect(receivedLines, isNot(contains('I/some_tag( 123): secret log')));
+    expect(receivedLines, contains('I/flutter( 123): allowed log'));
+  });
+
+  testWithoutContext('AdbLogReader does not filter logs if adbLogFiltering = false', () async {
+    final logger = BufferLogger.test();
+    final logReader = AdbLogReader.test(
+      FakeProcess(
+        stdout: utf8.encode(
+          '05-12 00:00:00.000 I/some_tag( 123): secret log\n'
+          '05-12 00:00:00.000 I/flutter( 123): allowed log\n',
+        ),
+      ),
+      'foo',
+      logger,
+      adbLogFiltering: false,
+    );
+    final List<String> receivedLines = [];
+    final StreamSubscription<String> subscription = logReader.logLines.listen(receivedLines.add);
+
+    await Future<void>.delayed(Duration.zero);
+    await subscription.cancel();
+
+    expect(receivedLines, contains('I/some_tag( 123): secret log'));
+    expect(receivedLines, contains('I/flutter( 123): allowed log'));
+  });
+}
+
+/// A mock VM Service that throws a generic [RPCErrorKind.kServerError] error
+/// with the text "Service connection disposed".
+///
+/// This is the way these errors are currently sent (as of Feb 2025) but are
+/// planned to be migrated to their own error code (see
+/// [_MyFakeVmServiceConnectionDisposedCode]) soon.
+class _MyFakeVmServiceConnectionDisposedText extends Fake implements VmService {
+  @override
+  Future<VM> getVM() async {
+    throw RPCError(null, RPCErrorKind.kServerError.code, 'Service connection disposed');
+  }
+}
+
+/// A mock VM Service that throws a [RPCErrorKind.kConnectionDisposed] error.
+class _MyFakeVmServiceConnectionDisposedCode extends Fake implements VmService {
+  @override
+  Future<VM> getVM() async {
+    throw RPCError(null, RPCErrorKind.kConnectionDisposed.code, 'Dummy text not matched');
+  }
 }
 
 AndroidDevice setUpAndroidDevice({
@@ -465,7 +644,8 @@ AndroidDevice setUpAndroidDevice({
   AndroidConsoleSocketFactory androidConsoleSocketFactory = kAndroidConsoleSocketFactory,
 }) {
   androidSdk ??= FakeAndroidSdk();
-  return AndroidDevice(id ?? '1234',
+  return AndroidDevice(
+    id ?? '1234',
     modelID: 'TestModel',
     logger: BufferLogger.test(),
     platform: platform ?? FakePlatform(),
@@ -481,7 +661,7 @@ class FakeAndroidSdk extends Fake implements AndroidSdk {
   String get adbPath => 'adb';
 }
 
-const String kAdbShellGetprop = '''
+const kAdbShellGetprop = '''
 [dalvik.vm.dex2oat-Xms]: [64m]
 [dalvik.vm.dex2oat-Xmx]: [512m]
 [dalvik.vm.heapsize]: [384m]
@@ -642,7 +822,8 @@ const String kAdbShellGetprop = '''
 /// A mock Android Console that presents a connection banner and responds to
 /// "avd name" requests with the supplied name.
 class FakeWorkingAndroidConsoleSocket extends Fake implements Socket {
-  FakeWorkingAndroidConsoleSocket(this.avdName) {
+  FakeWorkingAndroidConsoleSocket(this.avdName, {Future<void>? done})
+    : done = done ?? Completer<void>().future {
     _controller.add('Android Console: Welcome!\n');
     // Include OK in the same packet here. In the response to "avd name"
     // it's sent alone to ensure both are handled.
@@ -650,10 +831,14 @@ class FakeWorkingAndroidConsoleSocket extends Fake implements Socket {
   }
 
   final String avdName;
-  final StreamController<String> _controller = StreamController<String>();
+  final _controller = StreamController<String>();
 
   @override
-  Stream<E> asyncMap<E>(FutureOr<E> Function(Uint8List event) convert) => _controller.stream as Stream<E>;
+  final Future<void> done;
+
+  @override
+  Stream<E> asyncMap<E>(FutureOr<E> Function(Uint8List event) convert) =>
+      _controller.stream as Stream<E>;
 
   @override
   void add(List<int> data) {
@@ -664,26 +849,30 @@ class FakeWorkingAndroidConsoleSocket extends Fake implements Socket {
       // as part of the previous text to ensure both are handled.
       _controller.add('OK\n');
     } else {
-      throw 'Unexpected command $text';
+      throw Exception('Unexpected command $text');
     }
   }
 
   @override
-  void destroy() { }
+  void destroy() {}
 }
 
 /// An Android console socket that drops all input and returns no output.
 class FakeUnresponsiveAndroidConsoleSocket extends Fake implements Socket {
-  final StreamController<String> _controller = StreamController<String>();
+  final _controller = StreamController<String>();
 
   @override
-  Stream<E> asyncMap<E>(FutureOr<E> Function(Uint8List event) convert) => _controller.stream as Stream<E>;
+  final Future<void> done = Completer<void>().future;
+
+  @override
+  Stream<E> asyncMap<E>(FutureOr<E> Function(Uint8List event) convert) =>
+      _controller.stream as Stream<E>;
 
   @override
   void add(List<int> data) {}
 
   @override
-  void destroy() { }
+  void destroy() {}
 }
 
 /// An Android console socket that drops all input and returns no output.
@@ -695,10 +884,14 @@ class FakeDisconnectingAndroidConsoleSocket extends Fake implements Socket {
     _controller.add('Android Console: Some intro text\nOK\n');
   }
 
-  final StreamController<String> _controller = StreamController<String>();
+  final _controller = StreamController<String>();
 
   @override
-  Stream<E> asyncMap<E>(FutureOr<E> Function(Uint8List event) convert) => _controller.stream as Stream<E>;
+  final Future<void> done = Completer<void>().future;
+
+  @override
+  Stream<E> asyncMap<E>(FutureOr<E> Function(Uint8List event) convert) =>
+      _controller.stream as Stream<E>;
 
   @override
   void add(List<int> data) {
@@ -706,5 +899,5 @@ class FakeDisconnectingAndroidConsoleSocket extends Fake implements Socket {
   }
 
   @override
-  void destroy() { }
+  void destroy() {}
 }

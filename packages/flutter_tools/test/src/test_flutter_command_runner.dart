@@ -2,26 +2,48 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// @dart = 2.8
-
 import 'dart:async';
 
 import 'package:args/args.dart';
 import 'package:args/command_runner.dart';
+import 'package:flutter_tools/src/android/gradle_utils.dart';
 import 'package:flutter_tools/src/base/context.dart';
 import 'package:flutter_tools/src/base/file_system.dart';
+import 'package:flutter_tools/src/base/io.dart';
 import 'package:flutter_tools/src/base/logger.dart';
-import 'package:flutter_tools/src/base/user_messages.dart';
+import 'package:flutter_tools/src/base/template.dart';
 import 'package:flutter_tools/src/cache.dart';
 import 'package:flutter_tools/src/commands/create.dart';
-import 'package:flutter_tools/src/globals.dart' as globals;
+import 'package:flutter_tools/src/context/android_context.dart';
+import 'package:flutter_tools/src/context/tool_context.dart';
+import 'package:flutter_tools/src/device.dart';
+import 'package:flutter_tools/src/doctor.dart';
+import 'package:flutter_tools/src/experimental/extension_manager.dart';
+import 'package:flutter_tools/src/features.dart';
+import 'package:flutter_tools/src/ios/plist_parser.dart';
+import 'package:flutter_tools/src/isolated/mustache_template.dart';
+import 'package:flutter_tools/src/macos/cocoapods.dart';
 import 'package:flutter_tools/src/runner/flutter_command.dart';
 import 'package:flutter_tools/src/runner/flutter_command_runner.dart';
+import 'package:unified_analytics/unified_analytics.dart';
 
-export 'package:test_api/test_api.dart' hide test, isInstanceOf; // ignore: deprecated_member_use
+import 'context.dart';
+import 'fakes.dart';
 
-CommandRunner<void> createTestCommandRunner([ FlutterCommand command ]) {
-  final FlutterCommandRunner runner = TestFlutterCommandRunner();
+export 'package:test/test.dart' hide isInstanceOf, test;
+
+CommandRunner<void> createTestCommandRunner([
+  FlutterCommand? command,
+  Analytics? analytics,
+  ToolContext? toolContext,
+  FeatureFlags? featureFlags,
+]) {
+  final ToolContext? resolvedToolContext = toolContext ?? command?.toolContext;
+  final runner = TestFlutterCommandRunner(
+    analytics: analytics,
+    featureFlags: featureFlags,
+    toolContext: resolvedToolContext,
+  );
   if (command != null) {
     runner.addCommand(command);
   }
@@ -31,39 +53,89 @@ CommandRunner<void> createTestCommandRunner([ FlutterCommand command ]) {
 /// Creates a flutter project in the [temp] directory using the
 /// [arguments] list if specified, or `--no-pub` if not.
 /// Returns the path to the flutter project.
-Future<String> createProject(Directory temp, { List<String> arguments }) async {
+Future<String> createProject(
+  Directory temp, {
+  String name = 'flutter_project',
+  List<String>? arguments,
+  ToolContext? toolContext,
+}) async {
   arguments ??= <String>['--no-pub'];
-  final String projectPath = globals.fs.path.join(temp.path, 'flutter_project');
-  final CreateCommand command = CreateCommand();
+  final String projectPath = temp.fileSystem.path.join(temp.path, name);
+  final command = CreateCommand(
+    androidContext: FakeAndroidContext(),
+    appleContext: FakeAppleContext(),
+    templateRenderer: const MustacheTemplateRenderer(),
+    toolContext: DelegatingToolContext(fs: temp.fileSystem),
+  );
   final CommandRunner<void> runner = createTestCommandRunner(command);
   await runner.run(<String>['create', ...arguments, projectPath]);
-  // Created `.packages` since it's not created when the flag `--no-pub` is passed.
-  globals.fs.file(globals.fs.path.join(projectPath, '.packages')).createSync();
   return projectPath;
 }
 
 class TestFlutterCommandRunner extends FlutterCommandRunner {
+  TestFlutterCommandRunner({
+    Analytics? analytics,
+    AndroidContext? androidContext,
+    CocoaPods? cocoaPods,
+    DeviceManager? deviceManager,
+    Doctor? doctor,
+    ExtensionManager? extensionManager,
+    FeatureFlags? featureFlags,
+    GradleUtils? gradleUtils,
+    PlistParser? plistParser,
+    TemplateRenderer? templateRenderer,
+    ToolContext? toolContext,
+    super.verboseHelp,
+  }) : super(
+         analytics: analytics ?? _defaultFromContext<Analytics>() ?? const NoOpAnalytics(),
+         androidContext:
+             androidContext ??
+             FakeAndroidContext(gradleUtils: gradleUtils ?? _defaultFromContext<GradleUtils>()),
+         cocoaPods: cocoaPods ?? _defaultFromContext<CocoaPods>() ?? FakeCocoaPods(),
+         deviceManager:
+             deviceManager ?? _defaultFromContext<DeviceManager>() ?? FakeDeviceManager(),
+         doctor: doctor ?? _defaultFromContext<Doctor>() ?? FakeDoctor(),
+         extensionManager: extensionManager ?? FakeExtensionManager(),
+         featureFlags: featureFlags ?? _defaultFromContext<FeatureFlags>() ?? TestFeatureFlags(),
+         plistParser: plistParser ?? _defaultFromContext<PlistParser>() ?? FakePlistParser(),
+         templateRenderer:
+             templateRenderer ??
+             _defaultFromContext<TemplateRenderer>() ??
+             const MustacheTemplateRenderer(),
+         toolContext: toolContext ?? const DelegatingToolContext(),
+       );
+
+  static T? _defaultFromContext<T>() {
+    if (Zone.current[contextKey] case final AppContext appContext
+        when appContext.runtimeType == AppContext) {
+      return appContext.get<T>();
+    }
+    return null;
+  }
+
   @override
   Future<void> runCommand(ArgResults topLevelResults) async {
-    final Logger topLevelLogger = globals.logger;
-    final Map<Type, dynamic> contextOverrides = <Type, dynamic>{
-      if (topLevelResults['verbose'] as bool)
-        Logger: VerboseLogger(topLevelLogger),
+    final Logger topLevelLogger = toolContext.logger;
+    final contextOverrides = <Type, Object?>{
+      if (topLevelResults['verbose'] as bool) Logger: VerboseLogger(topLevelLogger),
+      ProcessInfo: toolContext.processInfo,
     };
     return context.run<void>(
-      overrides: contextOverrides.map<Type, Generator>((Type type, dynamic value) {
+      overrides: contextOverrides.map<Type, Generator>((Type type, Object? value) {
         return MapEntry<Type, Generator>(type, () => value);
       }),
       body: () {
-        Cache.flutterRoot ??= Cache.defaultFlutterRoot(
-          platform: globals.platform,
-          fileSystem: globals.fs,
-          userMessages: UserMessages(),
-        );
+        final Cache cache = toolContext.cache;
         // For compatibility with tests that set this to a relative path.
-        Cache.flutterRoot = globals.fs.path.normalize(globals.fs.path.absolute(Cache.flutterRoot));
+        final FileSystem fs = toolContext.fs;
+        cache.flutterRoot = fs.path.normalize(fs.path.absolute(cache.flutterRoot));
         return super.runCommand(topLevelResults);
-      }
+      },
     );
+  }
+
+  @override
+  void printUsage() {
+    toolContext.logger.printStatus(usage);
   }
 }

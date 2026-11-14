@@ -6,8 +6,10 @@ import 'dart:async';
 
 import 'base/io.dart';
 import 'base/logger.dart';
+import 'base/utils.dart';
 import 'device.dart';
 import 'device_port_forwarder.dart';
+import 'vmservice.dart';
 
 /// Discovers a specific service protocol on a device, and forwards the service
 /// protocol device port to the host.
@@ -19,17 +21,13 @@ class ProtocolDiscovery {
     required this.throttleDuration,
     this.hostPort,
     this.devicePort,
-    required this.ipv6,
-    required Logger logger,
-  }) : _logger = logger,
-       assert(logReader != null) {
-    _deviceLogSubscription = logReader.logLines.listen(
-      _handleLine,
-      onDone: _stopScrapingLogs,
-    );
+    required this._ipv6,
+    required this._logger,
+  }) {
+    _deviceLogSubscription = logReader.logLines.listen(_handleLine, onDone: _stopScrapingLogs);
   }
 
-  factory ProtocolDiscovery.observatory(
+  factory ProtocolDiscovery.vmService(
     DeviceLogReader logReader, {
     DevicePortForwarder? portForwarder,
     Duration? throttleDuration,
@@ -38,10 +36,10 @@ class ProtocolDiscovery {
     required bool ipv6,
     required Logger logger,
   }) {
-    const String kObservatoryService = 'Observatory';
+    const kVmServiceService = 'VM Service';
     return ProtocolDiscovery._(
       logReader,
-      kObservatoryService,
+      kVmServiceService,
       portForwarder: portForwarder,
       throttleDuration: throttleDuration ?? const Duration(milliseconds: 200),
       hostPort: hostPort,
@@ -56,14 +54,14 @@ class ProtocolDiscovery {
   final DevicePortForwarder? portForwarder;
   final int? hostPort;
   final int? devicePort;
-  final bool ipv6;
+  final bool _ipv6;
   final Logger _logger;
 
-  /// The time to wait before forwarding a new observatory URIs from [logReader].
+  /// The time to wait before forwarding a new VM Service URIs from [logReader].
   final Duration throttleDuration;
 
   StreamSubscription<String>? _deviceLogSubscription;
-  final _BufferedStreamController<Uri> _uriStreamController = _BufferedStreamController<Uri>();
+  final _uriStreamController = _BufferedStreamController<Uri>();
 
   /// The discovered service URL.
   ///
@@ -81,17 +79,15 @@ class ProtocolDiscovery {
 
   /// The discovered service URLs.
   ///
-  /// When a new observatory URL: is available in [logReader],
+  /// When a new VM Service URL: is available in [logReader],
   /// the URLs are forwarded at most once every [throttleDuration].
-  /// Returns when no event has been observed for [throttleTimeout].
   ///
   /// Port forwarding is only attempted when this is invoked,
-  /// for each observatory URL in the stream.
+  /// for each VM Service URL in the stream.
   Stream<Uri> get uris {
-    final Stream<Uri> uriStream = _uriStreamController.stream
-      .transform(_throttle<Uri>(
-        waitDuration: throttleDuration,
-      ));
+    final Stream<Uri> uriStream = _uriStreamController.stream.transformWithCallSite(
+      _throttle<Uri>(waitDuration: throttleDuration),
+    );
     return uriStream.asyncMap<Uri>(_forwardPort);
   }
 
@@ -104,11 +100,10 @@ class ProtocolDiscovery {
   }
 
   Match? _getPatternMatch(String line) {
-    final RegExp r = RegExp(RegExp.escape(serviceName) + r' listening on ((http|//)[a-zA-Z0-9:/=_\-\.\[\]]+)');
-    return r.firstMatch(line);
+    return kVMServiceMessageRegExp.firstMatch(line);
   }
 
-  Uri? _getObservatoryUri(String line) {
+  Uri? _getVmServiceUri(String line) {
     final Match? match = _getPatternMatch(line);
     if (match != null) {
       return Uri.parse(match[1]!);
@@ -119,7 +114,7 @@ class ProtocolDiscovery {
   void _handleLine(String line) {
     Uri? uri;
     try {
-      uri = _getObservatoryUri(line);
+      uri = _getVmServiceUri(line);
     } on FormatException catch (error, stackTrace) {
       _uriStreamController.addError(error, stackTrace);
     }
@@ -127,7 +122,7 @@ class ProtocolDiscovery {
       return;
     }
     if (devicePort != null && uri.port != devicePort) {
-      _logger.printTrace('skipping potential observatory $uri due to device port mismatch');
+      _logger.printTrace('skipping potential VM Service $uri due to device port mismatch');
       return;
     }
     _uriStreamController.add(uri);
@@ -135,17 +130,19 @@ class ProtocolDiscovery {
 
   Future<Uri> _forwardPort(Uri deviceUri) async {
     _logger.printTrace('$serviceName URL on device: $deviceUri');
-    Uri hostUri = deviceUri;
+    var hostUri = deviceUri;
 
     final DevicePortForwarder? forwarder = portForwarder;
     if (forwarder != null) {
       final int actualDevicePort = deviceUri.port;
       final int actualHostPort = await forwarder.forward(actualDevicePort, hostPort: hostPort);
-      _logger.printTrace('Forwarded host port $actualHostPort to device port $actualDevicePort for $serviceName');
+      _logger.printTrace(
+        'Forwarded host port $actualHostPort to device port $actualDevicePort for $serviceName',
+      );
       hostUri = deviceUri.replace(port: actualHostPort);
     }
 
-    if (InternetAddress(hostUri.host).isLoopback && ipv6) {
+    if (InternetAddress(hostUri.host).isLoopback && _ipv6) {
       hostUri = hostUri.replace(host: InternetAddress.loopbackIPv6.host);
     }
     return hostUri;
@@ -155,8 +152,8 @@ class ProtocolDiscovery {
 /// Provides a broadcast stream controller that buffers the events
 /// if there isn't a listener attached.
 /// The events are then delivered when a listener is attached to the stream.
-class _BufferedStreamController<T> {
-  _BufferedStreamController() : _events = <dynamic>[];
+class _BufferedStreamController<T extends Object> {
+  _BufferedStreamController() : _events = <Object>[];
 
   /// The stream that this controller is controlling.
   Stream<T> get stream {
@@ -164,16 +161,15 @@ class _BufferedStreamController<T> {
   }
 
   late final StreamController<T> _streamController = () {
-    final StreamController<T> streamControllerInstance = StreamController<T>.broadcast();
-      streamControllerInstance.onListen = () {
-      for (final dynamic event in _events) {
-        assert(T is! List);
+    final streamControllerInstance = StreamController<T>.broadcast();
+    streamControllerInstance.onListen = () {
+      for (final Object event in _events) {
         if (event is T) {
           streamControllerInstance.add(event);
         } else {
           streamControllerInstance.addError(
-            (event as Iterable<dynamic>).first as Object,
-            event.last as StackTrace,
+            (event as Iterable<Object?>).first!,
+            event.last as StackTrace?,
           );
         }
       }
@@ -182,7 +178,7 @@ class _BufferedStreamController<T> {
     return streamControllerInstance;
   }();
 
-  final List<dynamic> _events;
+  final List<Object> _events;
 
   /// Sends [event] if there is a listener attached to the broadcast stream.
   /// Otherwise, it enqueues [event] until a listener is attached.
@@ -199,7 +195,7 @@ class _BufferedStreamController<T> {
     if (_streamController.hasListener) {
       _streamController.addError(error, stackTrace);
     } else {
-      _events.add(<dynamic>[error, stackTrace]);
+      _events.add(<Object?>[error, stackTrace]);
     }
   }
 
@@ -214,32 +210,26 @@ class _BufferedStreamController<T> {
 /// For example, consider a `waitDuration` of `10ms`, and list of event names
 /// and arrival times: `a (0ms), b (5ms), c (11ms), d (21ms)`.
 /// The events `a`, `c`, and `d` will be produced as a result.
-StreamTransformer<S, S> _throttle<S>({
-  required Duration waitDuration,
-}) {
-  assert(waitDuration != null);
-
+StreamTransformer<S, S> _throttle<S>({required Duration waitDuration}) {
   S latestLine;
   int? lastExecution;
   Future<void>? throttleFuture;
-  bool done = false;
+  var done = false;
 
-  return StreamTransformer<S, S>
-    .fromHandlers(
-      handleData: (S value, EventSink<S> sink) {
-        latestLine = value;
+  return StreamTransformer<S, S>.fromHandlers(
+    handleData: (S value, EventSink<S> sink) {
+      latestLine = value;
 
-        final bool isFirstMessage = lastExecution == null;
-        final int currentTime = DateTime.now().millisecondsSinceEpoch;
-        lastExecution ??= currentTime;
-        final int remainingTime = currentTime - lastExecution!;
+      final isFirstMessage = lastExecution == null;
+      final int currentTime = DateTime.now().millisecondsSinceEpoch;
+      lastExecution ??= currentTime;
+      final int remainingTime = currentTime - lastExecution!;
 
-        // Always send the first event immediately.
-        final int nextExecutionTime = isFirstMessage || remainingTime > waitDuration.inMilliseconds
+      // Always send the first event immediately.
+      final int nextExecutionTime = isFirstMessage || remainingTime > waitDuration.inMilliseconds
           ? 0
           : waitDuration.inMilliseconds - remainingTime;
-        throttleFuture ??= Future<void>
-          .delayed(Duration(milliseconds: nextExecutionTime))
+      throttleFuture ??= Future<void>.delayed(Duration(milliseconds: nextExecutionTime))
           .whenComplete(() {
             if (done) {
               return;
@@ -248,10 +238,10 @@ StreamTransformer<S, S> _throttle<S>({
             throttleFuture = null;
             lastExecution = DateTime.now().millisecondsSinceEpoch;
           });
-      },
-      handleDone: (EventSink<S> sink) {
-        done = true;
-        sink.close();
-      }
-    );
+    },
+    handleDone: (EventSink<S> sink) {
+      done = true;
+      sink.close();
+    },
+  );
 }

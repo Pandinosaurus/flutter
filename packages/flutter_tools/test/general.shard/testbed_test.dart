@@ -2,44 +2,64 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// @dart = 2.8
-
 import 'dart:async';
 import 'dart:io';
 
 import 'package:file/file.dart';
 import 'package:file/memory.dart';
 import 'package:flutter_tools/src/base/context.dart';
-import 'package:flutter_tools/src/base/error_handling_io.dart';
 import 'package:flutter_tools/src/base/file_system.dart';
 import 'package:flutter_tools/src/base/process.dart';
-import 'package:flutter_tools/src/globals.dart' as globals;
+import 'package:flutter_tools/src/cache.dart';
+import 'package:flutter_tools/src/ios/plist_parser.dart';
 
 import '../src/common.dart';
+import '../src/fake_process_manager.dart';
+import '../src/fakes.dart';
 import '../src/testbed.dart';
 
 void main() {
   group('Testbed', () {
+    test('Does not evaluate overrides before setup runs', () async {
+      late FileSystem fs;
+      late ProcessManager processManager;
+      final testbed = TestBed(
+        setup: () {
+          fs = MemoryFileSystem.test();
+          processManager = FakeProcessManager.empty();
+        },
+        overrides: <Type, Generator>{FileSystem: () => fs, ProcessManager: () => processManager},
+      );
 
-    test('Can provide default interfaces', () async {
-      final Testbed testbed = Testbed();
-
-      FileSystem localFileSystem;
+      String? flutterRoot;
+      ProcessManager? resolvedProcessManager;
+      PlistParser? resolvedPlistParser;
       await testbed.run(() {
-        localFileSystem = globals.fs;
+        flutterRoot = context.get<Cache>()?.flutterRoot;
+        resolvedProcessManager = context.get<ProcessManager>();
+        resolvedPlistParser = context.get<PlistParser>();
       });
 
-      expect(localFileSystem, isA<ErrorHandlingFileSystem>());
-      expect((localFileSystem as ErrorHandlingFileSystem).fileSystem,
-             isA<MemoryFileSystem>());
+      expect(flutterRoot, isEmpty);
+      expect(resolvedProcessManager, same(processManager));
+      expect(resolvedPlistParser, isA<FakePlistParser>());
+    });
+
+    test('Can provide default interfaces', () async {
+      final testbed = TestBed();
+
+      FileSystem? localFileSystem;
+      await testbed.run(() {
+        localFileSystem = context.resolveOverride<FileSystem>();
+      });
+
+      expect(localFileSystem, isA<MemoryFileSystem>());
     });
 
     test('Can provide setup interfaces', () async {
-      final Testbed testbed = Testbed(overrides: <Type, Generator>{
-        A: () => A(),
-      });
+      final testbed = TestBed(overrides: <Type, Generator>{A: () => A()});
 
-      A instance;
+      A? instance;
       await testbed.run(() {
         instance = context.get<A>();
       });
@@ -48,24 +68,20 @@ void main() {
     });
 
     test('Can provide local overrides', () async {
-      final Testbed testbed = Testbed(overrides: <Type, Generator>{
-        A: () => A(),
-      });
+      final testbed = TestBed(overrides: <Type, Generator>{A: () => A()});
 
-      A instance;
+      A? instance;
       await testbed.run(() {
         instance = context.get<A>();
-      }, overrides: <Type, Generator>{
-        A: () => B(),
-      });
+      }, overrides: <Type, Generator>{A: () => B()});
 
       expect(instance, isA<B>());
     });
 
     test('provides a mocked http client', () async {
-      final Testbed testbed = Testbed();
+      final testbed = TestBed();
       await testbed.run(() async {
-        final HttpClient client = HttpClient();
+        final client = HttpClient();
         final HttpClientRequest request = await client.getUrl(Uri.parse('http://foo.dev'));
         final HttpClientResponse response = await request.close();
 
@@ -75,32 +91,33 @@ void main() {
     });
 
     test('Throws StateError if Timer is left pending', () async {
-      final Testbed testbed = Testbed();
+      final testbed = TestBed();
 
-      expect(testbed.run(() async {
-        Timer.periodic(const Duration(seconds: 1), (Timer timer) { });
-      }), throwsStateError);
+      expect(
+        testbed.run(() async {
+          Timer.periodic(const Duration(seconds: 1), (Timer timer) {});
+        }),
+        throwsStateError,
+      );
     });
 
     test("Doesn't throw a StateError if Timer is left cleaned up", () async {
-      final Testbed testbed = Testbed();
+      final testbed = TestBed();
 
       await testbed.run(() async {
-        final Timer timer = Timer.periodic(const Duration(seconds: 1), (Timer timer) { });
+        final timer = Timer.periodic(const Duration(seconds: 1), (Timer timer) {});
         timer.cancel();
       });
     });
 
-    test('Throws if ProcessUtils is injected',() {
-      final Testbed testbed = Testbed(overrides: <Type, Generator>{
-        ProcessUtils: () => null,
-      });
+    test('Throws if ProcessUtils is injected', () {
+      final testbed = TestBed(overrides: <Type, Generator>{ProcessUtils: () => null});
 
       expect(() => testbed.run(() {}), throwsStateError);
     });
   });
 }
 
-class A { }
+class A {}
 
-class B extends A { }
+class B extends A {}

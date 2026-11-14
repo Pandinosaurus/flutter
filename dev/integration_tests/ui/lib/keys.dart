@@ -7,3 +7,7 @@ const String kHeightText = 'height_text';
 const String kUnfocusButton = 'unfocus_button';
 const String kOffsetText = 'offset_text';
 const String kListView = 'list_view';
+const String kKeyboardVisibleView = 'keyboard_visible';
+const String kEdgeToEdgeButton = 'edge_to_edge_button';
+const String kInsetsText = 'insets_text';
+const String kMaxDeltaText = 'max_delta_text';

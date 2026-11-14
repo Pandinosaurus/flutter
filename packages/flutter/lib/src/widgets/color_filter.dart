@@ -2,6 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+/// @docImport 'basic.dart';
+library;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/rendering.dart';
 
@@ -32,11 +35,7 @@ import 'framework.dart';
 @immutable
 class ColorFiltered extends SingleChildRenderObjectWidget {
   /// Creates a widget that applies a [ColorFilter] to its child.
-  ///
-  /// The [colorFilter] must not be null.
-  const ColorFiltered({required this.colorFilter, Widget? child, Key? key})
-      : assert(colorFilter != null),
-        super(key: key, child: child);
+  const ColorFiltered({required this.colorFilter, super.child, super.key});
 
   /// The color filter to apply to the child of this widget.
   final ColorFilter colorFilter;
@@ -62,7 +61,6 @@ class _ColorFilterRenderObject extends RenderProxyBox {
   ColorFilter get colorFilter => _colorFilter;
   ColorFilter _colorFilter;
   set colorFilter(ColorFilter value) {
-    assert(value != null);
     if (value != _colorFilter) {
       _colorFilter = value;
       markNeedsPaint();
@@ -74,6 +72,15 @@ class _ColorFilterRenderObject extends RenderProxyBox {
 
   @override
   void paint(PaintingContext context, Offset offset) {
-    layer = context.pushColorFilter(offset, colorFilter, super.paint, oldLayer: layer as ColorFilterLayer?);
+    layer = context.pushColorFilter(
+      offset,
+      colorFilter,
+      super.paint,
+      oldLayer: layer as ColorFilterLayer?,
+    );
+    assert(() {
+      layer!.debugCreator = debugCreator;
+      return true;
+    }());
   }
 }

@@ -13,7 +13,7 @@ import 'login.dart';
 import 'supplemental/cut_corners_border.dart';
 
 class ShrineApp extends StatefulWidget {
-  const ShrineApp({Key? key}) : super(key: key);
+  const ShrineApp({super.key});
 
   @override
   State<ShrineApp> createState() => _ShrineAppState();
@@ -81,45 +81,41 @@ IconThemeData _customIconTheme(IconThemeData original) {
 }
 
 ThemeData _buildShrineTheme() {
-  final ThemeData base = ThemeData.light();
+  final base = ThemeData();
   return base.copyWith(
     colorScheme: kShrineColorScheme,
     primaryColor: kShrinePink100,
     scaffoldBackgroundColor: kShrineBackgroundWhite,
     cardColor: kShrineBackgroundWhite,
-    errorColor: kShrineErrorRed,
     primaryIconTheme: _customIconTheme(base.iconTheme),
-    inputDecorationTheme: const InputDecorationTheme(border: CutCornersBorder()),
+    inputDecorationTheme: const InputDecorationThemeData(border: CutCornersBorder()),
     textTheme: _buildShrineTextTheme(base.textTheme),
     primaryTextTheme: _buildShrineTextTheme(base.primaryTextTheme),
     iconTheme: _customIconTheme(base.iconTheme),
+    appBarTheme: const AppBarTheme(backgroundColor: kShrinePink100),
   );
 }
 
 TextTheme _buildShrineTextTheme(TextTheme base) {
-  return base.copyWith(
-    headline5: base.headline5!.copyWith(fontWeight: FontWeight.w500),
-    headline6: base.headline6!.copyWith(fontSize: 18.0),
-    caption: base.caption!.copyWith(fontWeight: FontWeight.w400, fontSize: 14.0),
-    bodyText1: base.bodyText1!.copyWith(fontWeight: FontWeight.w500, fontSize: 16.0),
-    button: base.button!.copyWith(fontWeight: FontWeight.w500, fontSize: 14.0),
-  ).apply(
-    fontFamily: 'Raleway',
-    displayColor: kShrineBrown900,
-    bodyColor: kShrineBrown900,
-  );
+  return base
+      .copyWith(
+        headlineSmall: base.headlineSmall!.copyWith(fontWeight: FontWeight.w500),
+        titleLarge: base.titleLarge!.copyWith(fontSize: 18.0),
+        bodySmall: base.bodySmall!.copyWith(fontWeight: FontWeight.w400, fontSize: 14.0),
+        bodyLarge: base.bodyLarge!.copyWith(fontWeight: FontWeight.w500, fontSize: 16.0),
+        labelLarge: base.labelLarge!.copyWith(fontWeight: FontWeight.w500, fontSize: 14.0),
+      )
+      .apply(fontFamily: 'Raleway', displayColor: kShrineBrown900, bodyColor: kShrineBrown900);
 }
 
 const ColorScheme kShrineColorScheme = ColorScheme(
   primary: kShrinePink100,
   secondary: kShrinePink50,
   surface: kShrineSurfaceWhite,
-  background: kShrineBackgroundWhite,
   error: kShrineErrorRed,
   onPrimary: kShrineBrown900,
   onSecondary: kShrineBrown900,
   onSurface: kShrineBrown900,
-  onBackground: kShrineBrown900,
   onError: kShrineSurfaceWhite,
   brightness: Brightness.light,
 );

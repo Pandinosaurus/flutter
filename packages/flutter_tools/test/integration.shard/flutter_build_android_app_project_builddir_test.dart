@@ -2,8 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// @dart = 2.8
-
 import 'package:file_testing/file_testing.dart';
 import 'package:flutter_tools/src/base/file_system.dart';
 
@@ -17,17 +15,11 @@ import 'test_utils.dart';
 // `flutter build` command inside the `example` directory, so we create a plugin
 // project in the test.
 void main() {
-  Directory tempDir;
-  String flutterBin;
-  Directory exampleAppDir;
+  late Directory tempDir;
+  late Directory exampleAppDir;
 
   setUp(() async {
     tempDir = createResolvedTempDirectorySync('flutter_plugin_test.');
-    flutterBin = fileSystem.path.join(
-      getFlutterRoot(),
-      'bin',
-      'flutter',
-    );
     exampleAppDir = tempDir.childDirectory('aaa').childDirectory('example');
 
     processManager.runSync(<String>[
@@ -44,42 +36,33 @@ void main() {
     tryToDelete(tempDir);
   });
 
-  void _checkBuildDir() {
+  void checkBuildDir() {
     // The android/app/build directory should not exists
-    final Directory appBuildDir = fileSystem.directory(fileSystem.path.join(
-      exampleAppDir.path,
-      'android',
-      'app',
-      'build',
-    ));
+    final Directory appBuildDir = fileSystem.directory(
+      fileSystem.path.join(exampleAppDir.path, 'android', 'app', 'build'),
+    );
     expect(appBuildDir, isNot(exists));
   }
 
-  test(
-    'android/app/build should not exists after flutter build apk',
-    () async {
-      processManager.runSync(<String>[
-        flutterBin,
-        ...getLocalEngineArguments(),
-        'build',
-        'apk',
-        '--target-platform=android-arm',
-      ], workingDirectory: exampleAppDir.path);
-      _checkBuildDir();
-    },
-  );
+  test('android/app/build should not exists after flutter build apk', () async {
+    processManager.runSync(<String>[
+      flutterBin,
+      ...getLocalEngineArguments(),
+      'build',
+      'apk',
+      '--target-platform=android-arm',
+    ], workingDirectory: exampleAppDir.path);
+    checkBuildDir();
+  });
 
-  test(
-    'android/app/build should not exists after flutter build appbundle',
-    () async {
-      processManager.runSync(<String>[
-        flutterBin,
-        ...getLocalEngineArguments(),
-        'build',
-        'appbundle',
-        '--target-platform=android-arm',
-      ], workingDirectory: exampleAppDir.path);
-      _checkBuildDir();
-    },
-  );
+  test('android/app/build should not exists after flutter build appbundle', () async {
+    processManager.runSync(<String>[
+      flutterBin,
+      ...getLocalEngineArguments(),
+      'build',
+      'appbundle',
+      '--target-platform=android-arm',
+    ], workingDirectory: exampleAppDir.path);
+    checkBuildDir();
+  });
 }

@@ -2,9 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+/// @docImport 'package:flutter/widgets.dart';
+///
+/// @docImport 'binding.dart';
+library;
+
 import 'package:flutter/foundation.dart';
 
 import 'events.dart';
+
+export 'events.dart' show PointerSignalEvent;
 
 /// The callback to register with a [PointerSignalResolver] to express
 /// interest in a pointer signal event.
@@ -30,7 +37,7 @@ bool _isSameEvent(PointerSignalEvent event1, PointerSignalEvent event2) {
 ///
 /// ```dart
 /// void handleSignalEvent(PointerSignalEvent event) {
-///   GestureBinding.instance!.pointerSignalResolver.register(event, (PointerSignalEvent event) {
+///   GestureBinding.instance.pointerSignalResolver.register(event, (PointerSignalEvent event) {
 ///     // handle the event...
 ///   });
 /// }
@@ -59,11 +66,24 @@ class PointerSignalResolver {
 
   /// Registers interest in handling [event].
   ///
-  /// See the documentation for the [PointerSignalResolver] class on when and
-  /// how this method should be used.
+  /// This method may be called multiple times (typically from different parts
+  /// of the widget hierarchy) for the same `event`, with different `callback`s,
+  /// as the event is being dispatched across the tree. Once the dispatching is
+  /// complete, the [GestureBinding] calls [resolve], and the first registered
+  /// callback is called.
+  ///
+  /// The `callback` is invoked with one argument, the `event`.
+  ///
+  /// Once the [register] method has been called with a particular `event`, it
+  /// must not be called for other `event`s until after [resolve] has been
+  /// called. Only one event disambiguation can be in flight at a time. In
+  /// normal use this is achieved by only registering callbacks for an event as
+  /// it is actively being dispatched (for example, in
+  /// [Listener.onPointerSignal]).
+  ///
+  /// See the documentation for the [PointerSignalResolver] class for an example
+  /// of using this method.
   void register(PointerSignalEvent event, PointerSignalResolvedCallback callback) {
-    assert(event != null);
-    assert(callback != null);
     assert(_currentEvent == null || _isSameEvent(_currentEvent!, event));
     if (_firstRegisteredCallback != null) {
       return;
@@ -81,6 +101,9 @@ class PointerSignalResolver {
   void resolve(PointerSignalEvent event) {
     if (_firstRegisteredCallback == null) {
       assert(_currentEvent == null);
+      // Nothing in the framework/app wants to handle the `event`. Allow the
+      // platform to trigger any default native actions.
+      event.respond(allowPlatformDefault: true);
       return;
     }
     assert(_isSameEvent(_currentEvent!, event));
@@ -89,18 +112,24 @@ class PointerSignalResolver {
     } catch (exception, stack) {
       InformationCollector? collector;
       assert(() {
-        collector = () sync* {
-          yield DiagnosticsProperty<PointerSignalEvent>('Event', event, style: DiagnosticsTreeStyle.errorProperty);
-        };
+        collector = () => <DiagnosticsNode>[
+          DiagnosticsProperty<PointerSignalEvent>(
+            'Event',
+            event,
+            style: DiagnosticsTreeStyle.errorProperty,
+          ),
+        ];
         return true;
       }());
-      FlutterError.reportError(FlutterErrorDetails(
-        exception: exception,
-        stack: stack,
-        library: 'gesture library',
-        context: ErrorDescription('while resolving a PointerSignalEvent'),
-        informationCollector: collector,
-      ));
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: exception,
+          stack: stack,
+          library: 'gesture library',
+          context: ErrorDescription('while resolving a PointerSignalEvent'),
+          informationCollector: collector,
+        ),
+      );
     }
     _firstRegisteredCallback = null;
     _currentEvent = null;

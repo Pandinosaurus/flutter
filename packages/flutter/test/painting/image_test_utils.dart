@@ -23,23 +23,52 @@ class TestImageProvider extends ImageProvider<TestImageProvider> {
   }
 
   @override
-  void resolveStreamForKey(ImageConfiguration config, ImageStream stream, TestImageProvider key, ImageErrorListener handleError) {
+  void resolveStreamForKey(
+    ImageConfiguration config,
+    ImageStream stream,
+    TestImageProvider key,
+    ImageErrorListener handleError,
+  ) {
     configuration = config;
     super.resolveStreamForKey(config, stream, key, handleError);
   }
 
   @override
-  ImageStreamCompleter load(TestImageProvider key, DecoderCallback decode) {
+  ImageStreamCompleter loadBuffer(TestImageProvider key, DecoderBufferCallback decode) {
+    throw UnsupportedError('Use ImageProvider.loadImage instead.');
+  }
+
+  @override
+  ImageStreamCompleter loadImage(TestImageProvider key, ImageDecoderCallback decode) {
     loadCallCount += 1;
     return OneFrameImageStreamCompleter(_completer.future);
   }
 
   ImageInfo complete() {
-    final ImageInfo imageInfo = ImageInfo(image: testImage);
+    final imageInfo = ImageInfo(image: testImage);
     _completer.complete(imageInfo);
     return imageInfo;
   }
 
   @override
   String toString() => '${describeIdentity(this)}()';
+}
+
+/// An [ImageStream] subclass returned by [CustomStreamImageProvider.createStream].
+class CustomImageStream extends ImageStream {
+  CustomImageStream(this.configuration);
+
+  /// The configuration passed to [CustomStreamImageProvider.createStream].
+  final ImageConfiguration configuration;
+}
+
+/// An image provider that returns a [CustomImageStream] from [createStream].
+///
+/// Its key never resolves, so it never loads.
+class CustomStreamImageProvider extends ImageProvider<Object> {
+  @override
+  Future<Object> obtainKey(ImageConfiguration configuration) => Completer<Object>().future;
+
+  @override
+  ImageStream createStream(ImageConfiguration configuration) => CustomImageStream(configuration);
 }

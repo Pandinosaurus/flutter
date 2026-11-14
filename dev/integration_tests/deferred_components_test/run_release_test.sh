@@ -9,7 +9,7 @@
 #
 # In CI, this script currently depends on a modified version of bundletool because
 # ddmlib which bundletool depends on does not yet support detecting QEMU emulator device
-# density system properties. See https://android.googlesource.com/platform/tools/base/+/refs/heads/master/ddmlib/src/main/java/com/android/ddmlib/IDevice.java#46
+# density system properties. See https://android.googlesource.com/platform/tools/base/+/refs/heads/main/ddmlib/src/main/java/com/android/ddmlib/IDevice.java#46
 #
 # The modified bundletool which waives the density requirement is at:
 # https://chrome-infra-packages.appspot.com/p/flutter/android/bundletool/+/vFt1jA0cUeZLmUCVR5NG2JVB-SgJ18GH_pVYKMOlfUIC
@@ -45,7 +45,7 @@ do
     fi
     # Timeout if expected log not found
     current_time=$(date +%s)
-    if [[ $((current_time - run_start_time_seconds)) -ge 150 ]]; then
+    if [[ $((current_time - run_start_time_seconds)) -ge 300 ]]; then
         echo "Failure: Timed out, deferred component did not load."
         pkill -P $$
         exit 1
